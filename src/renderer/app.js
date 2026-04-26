@@ -181,9 +181,11 @@ function measureMedia(item, element) {
 
 function createTile(item) {
   const tile = document.createElement("article");
-  tile.className = `tile ${settings().cropMedia ? "" : "contain"}`;
+  tile.className = `tile loading ${settings().cropMedia ? "" : "contain"}`;
   tile.dataset.id = item.id;
   tile.style.setProperty("--fade-duration", `${settings().fadeMs}ms`);
+
+  const markReady = () => tile.classList.remove("loading");
 
   const media = document.createElement(item.type === "video" ? "video" : "img");
   media.src = item.url;
@@ -195,14 +197,22 @@ function createTile(item) {
     media.muted = true;
     media.playsInline = true;
     media.addEventListener("error", () => {
-      if (!item.fallbackUrl || media.dataset.usingFallback === "true") return;
+      if (!item.fallbackUrl || media.dataset.usingFallback === "true") {
+        tile.classList.remove("loading");
+        tile.classList.add("failed");
+        return;
+      }
+      tile.classList.add("loading");
       media.dataset.usingFallback = "true";
       media.src = item.fallbackUrl;
       media.load();
       media.play().catch(() => {});
     });
     media.addEventListener("loadedmetadata", () => measureMedia(item, media), { once: true });
-    media.addEventListener("canplay", () => media.play().catch(() => {}), { once: true });
+    media.addEventListener("canplay", () => {
+      markReady();
+      media.play().catch(() => {});
+    }, { once: true });
     media.addEventListener("timeupdate", () => {
       if (media.duration && media.currentTime >= media.duration - 0.25) {
         state.completedVideos.add(item.id);
@@ -210,7 +220,14 @@ function createTile(item) {
     });
   } else {
     media.decoding = "async";
-    media.addEventListener("load", () => measureMedia(item, media), { once: true });
+    media.addEventListener("load", () => {
+      markReady();
+      measureMedia(item, media);
+    }, { once: true });
+    media.addEventListener("error", () => {
+      tile.classList.remove("loading");
+      tile.classList.add("failed");
+    }, { once: true });
   }
 
   tile.addEventListener("click", () => replaceItem(item.id, true));
