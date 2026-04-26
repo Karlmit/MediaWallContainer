@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Media Wall</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main id="app">
+      <section id="emptyState" class="empty-state hidden">
+        <div class="brand">Media Wall</div>
+        <p id="emptyMessage">No media found in the mounted folder.</p>
+      </section>
+
+      <section id="wall" class="wall" aria-label="Media wall"></section>
+
+      <div id="topBar" class="top-bar hidden">
+        <button id="menuButton" class="icon-button" title="Open menu" aria-label="Open menu">Menu</button>
+      </div>
+
+      <aside id="debugPanel" class="debug-panel hidden" aria-label="Debug settings">
+        <div class="panel-title">Menu</div>
+        <button id="pauseButton" class="panel-button">Pause random swaps</button>
+        <button id="fullscreenButton" class="panel-button">Toggle fullscreen</button>
+        <button id="refreshButton" class="panel-button">Refresh media</button>
+        <form method="post" action="/logout">
+          <button class="panel-button" type="submit">Log out</button>
+        </form>
+        <label>
+          <span>Items</span>
+          <input id="itemCount" type="number" min="1" max="200" value="24">
+        </label>
+        <label>
+          <span>Average size</span>
+          <input id="averageSize" type="range" min="140" max="700" step="10" value="320">
+        </label>
+        <label>
+          <span>New random media</span>
+          <input id="swapSeconds" type="number" min="1" max="300" value="8">
+        </label>
+        <label>
+          <span>Fade seconds</span>
+          <input id="fadeSeconds" type="number" min="0" max="10" step="0.1" value="0.8">
+        </label>
+        <label class="checkbox-row">
+          <input id="cropMedia" type="checkbox" checked>
+          <span>Crop to fill tiles</span>
+        </label>
+        <section class="subfolder-section" aria-label="Subfolder filters">
+          <div class="section-title">Subfolders</div>
+          <div id="subfolderList" class="subfolder-list"></div>
+        </section>
+      </aside>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

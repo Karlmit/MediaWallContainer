@@ -1,0 +1,12 @@
+services:
+  media-wall:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      MEDIA_PASSWORD: "change-this-password"
+      MEDIA_DIR: "/media"
+      SESSION_SECRET: "change-this-to-a-long-random-string"
+    volumes:
+      - "C:/Path/To/Your/Media:/media:ro"
+    restart: unless-stopped
