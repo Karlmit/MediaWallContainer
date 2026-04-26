@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { spawn } = require("child_process");
 const fs = require("fs/promises");
 const path = require("path");
 const express = require("express");
@@ -9,9 +10,11 @@ const VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".mov", ".m4v", ".ogg", ".ogv
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const mediaRoot = path.resolve(process.env.MEDIA_DIR || "/media");
+const transcodeCacheRoot = path.resolve(process.env.TRANSCODE_CACHE_DIR || "/cache");
 const password = process.env.MEDIA_PASSWORD || "change-me";
 const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 const cookieName = "media_wall_session";
+const activeTranscodes = new Map();
 
 app.disable("x-powered-by");
 app.use(express.json());
@@ -78,10 +81,87 @@ function mediaUrl(relativePath) {
   return `/media/${relativePath.split("/").map(encodeURIComponent).join("/")}`;
 }
 
+function transcodeUrl(relativePath) {
+  return `/transcode/${relativePath.split("/").map(encodeURIComponent).join("/")}`;
+}
+
 function safeMediaPath(relativePath) {
   const resolved = path.resolve(mediaRoot, relativePath);
   if (resolved !== mediaRoot && !resolved.startsWith(`${mediaRoot}${path.sep}`)) return null;
   return resolved;
+}
+
+function isVideoPath(relativePath) {
+  return VIDEO_EXTENSIONS.has(path.extname(relativePath).toLowerCase());
+}
+
+async function pathExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function transcodeCachePath(relativePath, fullPath) {
+  const stats = await fs.stat(fullPath);
+  const cacheKey = crypto
+    .createHash("sha256")
+    .update(`${relativePath}:${stats.size}:${stats.mtimeMs}`)
+    .digest("hex");
+  return path.join(transcodeCacheRoot, `${cacheKey}.mp4`);
+}
+
+async function transcodeToMp4(relativePath, fullPath) {
+  const cachePath = await transcodeCachePath(relativePath, fullPath);
+  if (await pathExists(cachePath)) return cachePath;
+
+  const existing = activeTranscodes.get(cachePath);
+  if (existing) return existing;
+
+  const transcode = (async () => {
+    await fs.mkdir(transcodeCacheRoot, { recursive: true });
+    const tempPath = `${cachePath}.${process.pid}.${Date.now()}.tmp.mp4`;
+
+    await new Promise((resolve, reject) => {
+      const ffmpeg = spawn("ffmpeg", [
+        "-y",
+        "-i", fullPath,
+        "-map", "0:v:0",
+        "-map", "0:a:0?",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "160k",
+        "-movflags", "+faststart",
+        tempPath
+      ], { stdio: ["ignore", "ignore", "pipe"] });
+
+      let stderr = "";
+      ffmpeg.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+        if (stderr.length > 8000) stderr = stderr.slice(-8000);
+      });
+      ffmpeg.on("error", reject);
+      ffmpeg.on("close", (code) => {
+        if (code === 0) return resolve();
+        return reject(new Error(stderr || `ffmpeg exited with code ${code}`));
+      });
+    });
+
+    await fs.rename(tempPath, cachePath);
+    return cachePath;
+  })();
+
+  activeTranscodes.set(cachePath, transcode);
+  try {
+    return await transcode;
+  } finally {
+    activeTranscodes.delete(cachePath);
+  }
 }
 
 async function scanMedia(folder) {
@@ -115,7 +195,8 @@ async function scanMedia(folder) {
         name: entry.name,
         type: isImage ? "image" : "video",
         path: relativePath,
-        url: mediaUrl(relativePath)
+        url: mediaUrl(relativePath),
+        fallbackUrl: isVideo ? transcodeUrl(relativePath) : null
       });
     }));
   }
@@ -170,6 +251,23 @@ app.get("/api/media", async (_req, res) => {
     listTopSubfolders(mediaRoot)
   ]);
   res.json({ folder: mediaRoot, media, subfolders });
+});
+
+app.get("/transcode/*path", async (req, res) => {
+  const relativePath = req.params.path.join("/");
+  if (!isVideoPath(relativePath)) return res.sendStatus(404);
+
+  const fullPath = safeMediaPath(relativePath);
+  if (!fullPath) return res.sendStatus(404);
+
+  try {
+    const cachePath = await transcodeToMp4(relativePath, fullPath);
+    res.type("mp4");
+    return res.sendFile(cachePath);
+  } catch (error) {
+    console.error(`Failed to transcode ${relativePath}:`, error.message);
+    return res.sendStatus(500);
+  }
 });
 
 app.get("/media/*path", async (req, res) => {

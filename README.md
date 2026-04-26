@@ -28,3 +28,5 @@ Open `http://localhost:3000`, enter the password, then use the browser fullscree
 Supported image files: `jpg`, `jpeg`, `png`, `gif`, `webp`, `bmp`, `avif`.
 
 Supported video files: `mp4`, `webm`, `mov`, `m4v`, `ogg`, `ogv`, `mkv`.
+
+Videos play directly when the browser supports their codecs. If a video fails to play, the server uses FFmpeg to create a cached browser-compatible MP4 fallback in the `media-wall-cache` Docker volume.

@@ -194,6 +194,13 @@ function createTile(item) {
     media.loop = true;
     media.muted = true;
     media.playsInline = true;
+    media.addEventListener("error", () => {
+      if (!item.fallbackUrl || media.dataset.usingFallback === "true") return;
+      media.dataset.usingFallback = "true";
+      media.src = item.fallbackUrl;
+      media.load();
+      media.play().catch(() => {});
+    });
     media.addEventListener("loadedmetadata", () => measureMedia(item, media), { once: true });
     media.addEventListener("canplay", () => media.play().catch(() => {}), { once: true });
     media.addEventListener("timeupdate", () => {

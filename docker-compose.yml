@@ -7,6 +7,11 @@ services:
       MEDIA_PASSWORD: "change-this-password"
       MEDIA_DIR: "/media"
       SESSION_SECRET: "change-this-to-a-long-random-string"
+      TRANSCODE_CACHE_DIR: "/cache"
     volumes:
       - "C:/Path/To/Your/Media:/media:ro"
+      - "media-wall-cache:/cache"
     restart: unless-stopped
+
+volumes:
+  media-wall-cache:
