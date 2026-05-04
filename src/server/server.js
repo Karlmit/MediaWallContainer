@@ -3,9 +3,7 @@ const { spawn } = require("child_process");
 const fs = require("fs/promises");
 const path = require("path");
 const express = require("express");
-
-const IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"]);
-const VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".mov", ".m4v", ".ogg", ".ogv", ".mkv"]);
+const { VIDEO_EXTENSIONS, loadFolderData } = require("../shared/media");
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -164,60 +162,26 @@ async function transcodeToMp4(relativePath, fullPath) {
   }
 }
 
-async function scanMedia(folder) {
-  const media = [];
-
-  async function walk(currentFolder) {
-    let entries;
-    try {
-      entries = await fs.readdir(currentFolder, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    await Promise.all(entries.map(async (entry) => {
-      const fullPath = path.join(currentFolder, entry.name);
-      if (entry.isDirectory()) {
-        await walk(fullPath);
-        return;
-      }
-
-      if (!entry.isFile()) return;
-
-      const ext = path.extname(entry.name).toLowerCase();
-      const isImage = IMAGE_EXTENSIONS.has(ext);
-      const isVideo = VIDEO_EXTENSIONS.has(ext);
-      if (!isImage && !isVideo) return;
-
-      const relativePath = path.relative(folder, fullPath).split(path.sep).join("/");
-      media.push({
-        id: relativePath,
-        name: entry.name,
-        type: isImage ? "image" : "video",
-        path: relativePath,
-        url: mediaUrl(relativePath),
-        fallbackUrl: isVideo ? transcodeUrl(relativePath) : null
-      });
-    }));
-  }
-
-  await walk(folder);
-  return media.sort((a, b) => a.path.localeCompare(b.path));
+function createServerItem({ relativePath, name, type, isVideo }) {
+  return {
+    id: relativePath,
+    name,
+    type,
+    path: relativePath,
+    url: mediaUrl(relativePath),
+    fallbackUrl: isVideo ? transcodeUrl(relativePath) : null
+  };
 }
 
-async function listTopSubfolders(folder) {
-  try {
-    const entries = await fs.readdir(folder, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => ({
-        name: entry.name,
-        path: entry.name
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  } catch {
-    return [];
-  }
+function createServerSubfolder({ relativePath, name }) {
+  return {
+    name,
+    path: relativePath
+  };
+}
+
+function loadServerFolderData() {
+  return loadFolderData(mediaRoot, createServerItem, createServerSubfolder);
 }
 
 app.get("/login", (req, res) => {
@@ -241,16 +205,12 @@ app.post("/logout", (req, res) => {
   res.redirect("/login");
 });
 
-app.use("/login.css", express.static(path.join(__dirname, "renderer", "login.css")));
+app.use("/login.css", express.static(path.join(__dirname, "..", "renderer", "login.css")));
 app.use(requireAuth);
-app.use(express.static(path.join(__dirname, "renderer")));
+app.use(express.static(path.join(__dirname, "..", "renderer")));
 
 app.get("/api/media", async (_req, res) => {
-  const [media, subfolders] = await Promise.all([
-    scanMedia(mediaRoot),
-    listTopSubfolders(mediaRoot)
-  ]);
-  res.json({ folder: mediaRoot, media, subfolders });
+  res.json(await loadServerFolderData());
 });
 
 app.get("/transcode/*path", async (req, res) => {

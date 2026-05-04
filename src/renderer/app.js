@@ -3,11 +3,15 @@ const emptyState = document.querySelector("#emptyState");
 const emptyMessage = document.querySelector("#emptyMessage");
 const topBar = document.querySelector("#topBar");
 const debugPanel = document.querySelector("#debugPanel");
+const chooseFolderButton = document.querySelector("#chooseFolderButton");
 const menuButton = document.querySelector("#menuButton");
+const debugChooseFolderButton = document.querySelector("#debugChooseFolderButton");
 const pauseButton = document.querySelector("#pauseButton");
 const fullscreenButton = document.querySelector("#fullscreenButton");
 const refreshButton = document.querySelector("#refreshButton");
 const subfolderList = document.querySelector("#subfolderList");
+const hostDesktopElements = document.querySelectorAll(".host-desktop");
+const hostWebElements = document.querySelectorAll(".host-web");
 
 const controls = {
   itemCount: document.querySelector("#itemCount"),
@@ -19,6 +23,7 @@ const controls = {
 
 const STORAGE_KEY = "mediaWall.settings.v2";
 const REFRESH_MS = 10000;
+const host = window.mediaWall?.mode === "desktop" ? "desktop" : "web";
 
 const state = {
   folder: null,
@@ -27,6 +32,7 @@ const state = {
   subfolders: [],
   excludedSubfolders: new Set(),
   active: [],
+  selectedItems: new Set(),
   shownThisSession: new Set(),
   completedVideos: new Set(),
   ratios: new Map(),
@@ -46,6 +52,7 @@ function loadSavedSettings() {
 
 function saveSettings() {
   const saved = {
+    folder: host === "desktop" ? state.folder : null,
     itemCount: controls.itemCount.value,
     averageSize: controls.averageSize.value,
     swapSeconds: controls.swapSeconds.value,
@@ -69,6 +76,7 @@ function applySavedSettings() {
     state.excludedSubfolders = new Set(saved.excludedSubfolders);
   }
   updatePauseButton();
+  return saved;
 }
 
 function settings() {
@@ -110,7 +118,9 @@ function markShown(items) {
 }
 
 function isInsideSubfolder(item, subfolderPath) {
-  return item.path === subfolderPath || item.path.startsWith(`${subfolderPath}/`);
+  const normalizedItemPath = item.path.replaceAll("\\", "/").toLowerCase();
+  const normalizedSubfolderPath = subfolderPath.replaceAll("\\", "/").toLowerCase();
+  return normalizedItemPath === normalizedSubfolderPath || normalizedItemPath.startsWith(`${normalizedSubfolderPath}/`);
 }
 
 function visibleMediaFromFilters() {
@@ -168,6 +178,27 @@ function renderSubfolderList() {
 
 function canRemoveItem(item) {
   return item.type !== "video" || state.completedVideos.has(item.id);
+}
+
+function updateTileSelection(tile, itemId) {
+  tile.classList.toggle("selected", state.selectedItems.has(itemId));
+}
+
+function toggleSelectedItem(itemId) {
+  if (state.selectedItems.has(itemId)) {
+    state.selectedItems.delete(itemId);
+  } else {
+    state.selectedItems.add(itemId);
+  }
+
+  const tile = state.tiles.get(itemId);
+  if (tile) updateTileSelection(tile, itemId);
+}
+
+function refreshTileSelections() {
+  for (const [itemId, tile] of state.tiles.entries()) {
+    updateTileSelection(tile, itemId);
+  }
 }
 
 function measureMedia(item, element) {
@@ -231,8 +262,13 @@ function createTile(item) {
   }
 
   tile.addEventListener("click", () => replaceItem(item.id, true));
+  tile.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    toggleSelectedItem(item.id);
+  });
   tile.append(media);
   wall.append(tile);
+  updateTileSelection(tile, item.id);
   requestAnimationFrame(() => tile.classList.add("visible"));
   state.tiles.set(item.id, tile);
   return tile;
@@ -249,6 +285,7 @@ function syncTiles() {
     if (activeIds.has(id)) continue;
     tile.classList.add("fading");
     tile.classList.remove("visible");
+    state.selectedItems.delete(id);
     state.tiles.delete(id);
     setTimeout(() => tile.remove(), settings().fadeMs + 80);
   }
@@ -498,6 +535,23 @@ function replaceAllItems() {
   layout();
 }
 
+function showSelectedItemsOnly() {
+  const selected = state.active.filter((item) => state.selectedItems.has(item.id));
+  if (!selected.length) return;
+
+  state.paused = true;
+  controls.itemCount.value = String(selected.length);
+  state.active = selected;
+  state.selectedItems.clear();
+  markShown(selected);
+  updatePauseButton();
+  saveSettings();
+  restartSwapTimer();
+  syncTiles();
+  refreshTileSelections();
+  layout();
+}
+
 function restartSwapTimer() {
   clearInterval(state.swapTimer);
   if (state.paused) return;
@@ -581,6 +635,7 @@ function loadFolderResult(result, resetWall = false) {
 
   if (resetWall || !state.active.length) {
     state.active = [];
+    state.selectedItems.clear();
     state.shownThisSession.clear();
     state.completedVideos.clear();
     state.ratios.clear();
@@ -592,6 +647,24 @@ function loadFolderResult(result, resetWall = false) {
   updateMediaList(state.media, false);
   restartSwapTimer();
   saveSettings();
+}
+
+async function chooseDesktopFolder() {
+  const result = await window.mediaWall.chooseFolder();
+  if (!result) return;
+  loadFolderResult(result, true);
+  window.mediaWall.watchFolder(state.folder);
+}
+
+async function restoreDesktopFolder() {
+  const saved = applySavedSettings();
+  if (!saved.folder) return;
+
+  const result = await window.mediaWall.scanFolder(saved.folder);
+  if (!result) return;
+
+  loadFolderResult(result, true);
+  window.mediaWall.watchFolder(state.folder);
 }
 
 async function loadServerMedia(resetWall = false) {
@@ -621,12 +694,52 @@ async function toggleFullscreen() {
   }
 }
 
-applySavedSettings();
+function configureHostControls() {
+  for (const element of hostDesktopElements) {
+    element.classList.toggle("hidden", host !== "desktop");
+  }
+  for (const element of hostWebElements) {
+    element.classList.toggle("hidden", host !== "web");
+  }
+}
+
+function initializeHost() {
+  configureHostControls();
+
+  if (host === "desktop") {
+    emptyState.classList.remove("hidden");
+    emptyMessage.textContent = "Choose a media folder to start.";
+    restoreDesktopFolder();
+    window.mediaWall.onMediaUpdated(({ folder, media, subfolders }) => {
+      if (folder !== state.folder) return;
+      state.allMedia = media;
+      state.subfolders = subfolders || [];
+      state.excludedSubfolders = new Set([...state.excludedSubfolders].filter((subfolderPath) => {
+        return state.subfolders.some((subfolder) => subfolder.path === subfolderPath);
+      }));
+      renderSubfolderList();
+      updateMediaList(visibleMediaFromFilters(), false);
+    });
+    return;
+  }
+
+  applySavedSettings();
+  loadServerMedia(true);
+  state.refreshTimer = setInterval(() => loadServerMedia(false), REFRESH_MS);
+}
 
 menuButton.addEventListener("click", () => debugPanel.classList.toggle("hidden"));
+if (chooseFolderButton) chooseFolderButton.addEventListener("click", chooseDesktopFolder);
+if (debugChooseFolderButton) debugChooseFolderButton.addEventListener("click", chooseDesktopFolder);
 pauseButton.addEventListener("click", togglePause);
-fullscreenButton.addEventListener("click", () => toggleFullscreen().catch(() => {}));
-refreshButton.addEventListener("click", () => loadServerMedia(true));
+fullscreenButton.addEventListener("click", () => {
+  if (host === "desktop") {
+    window.mediaWall.toggleFullscreen();
+  } else {
+    toggleFullscreen().catch(() => {});
+  }
+});
+if (refreshButton) refreshButton.addEventListener("click", () => loadServerMedia(true));
 
 window.addEventListener("resize", layout);
 
@@ -639,7 +752,26 @@ window.addEventListener("wheel", (event) => {
   changeItemCount(event.deltaY < 0 ? step : -step);
 }, { passive: false });
 
+window.addEventListener("mousedown", (event) => {
+  if (event.button !== 1) return;
+  if (debugPanel.contains(event.target)) return;
+  event.preventDefault();
+});
+
+window.addEventListener("auxclick", (event) => {
+  if (event.button !== 1) return;
+  if (debugPanel.contains(event.target)) return;
+
+  event.preventDefault();
+  showSelectedItemsOnly();
+});
+
 window.addEventListener("keydown", (event) => {
+  if (host === "desktop" && event.ctrlKey && event.code === "Space") {
+    event.preventDefault();
+    window.mediaWall.quitApp();
+    return;
+  }
   if (!event.ctrlKey && !event.altKey && !event.metaKey && event.code === "Space") {
     event.preventDefault();
     togglePause();
@@ -654,9 +786,23 @@ window.addEventListener("keydown", (event) => {
     replaceAllItems();
     return;
   }
+  if (!event.ctrlKey && !event.altKey && !event.metaKey && event.key === "ArrowUp") {
+    event.preventDefault();
+    changeItemCount(event.shiftKey ? 5 : 1);
+    return;
+  }
+  if (!event.ctrlKey && !event.altKey && !event.metaKey && event.key === "ArrowDown") {
+    event.preventDefault();
+    changeItemCount(event.shiftKey ? -5 : -1);
+    return;
+  }
   if (event.key === "F11") {
     event.preventDefault();
-    toggleFullscreen().catch(() => {});
+    if (host === "desktop") {
+      window.mediaWall.toggleFullscreen();
+    } else {
+      toggleFullscreen().catch(() => {});
+    }
   }
 });
 
@@ -668,5 +814,4 @@ for (const input of Object.values(controls)) {
   });
 }
 
-loadServerMedia(true);
-state.refreshTimer = setInterval(() => loadServerMedia(false), REFRESH_MS);
+initializeHost();

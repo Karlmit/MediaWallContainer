@@ -1,0 +1,46 @@
+name: Build desktop release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows desktop app
+        run: npm run build:desktop
+
+      - name: Package Windows desktop app
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}"
+          Compress-Archive -Path "dist-latest/Media Wall-win32-x64/*" -DestinationPath "Media-Wall-Windows-$version.zip" -Force
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Media-Wall-Windows-${{ github.ref_name }}.zip
+          body: |
+            ## Media Wall ${{ github.ref_name }}
+
+            Download the Windows zip, extract it, and run `Media Wall.exe`.
+
+            Docker image:
+            `ghcr.io/karlmit/mediawallcontainer:${{ github.ref_name }}`

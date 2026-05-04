@@ -138,6 +138,29 @@ input {
   background: #151217;
 }
 
+.tile.selected {
+  outline: 4px solid var(--accent);
+  outline-offset: -4px;
+  z-index: 5;
+}
+
+.tile.selected::after {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  left: auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 2px solid #050507;
+  border-radius: 50%;
+  background: var(--accent);
+  content: "";
+  opacity: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  animation: none;
+}
+
 .tile.visible {
   opacity: 1;
   transform: scale(1);

@@ -11,6 +11,7 @@
       <section id="emptyState" class="empty-state hidden">
         <div class="brand">Media Wall</div>
         <p id="emptyMessage">No media found in the mounted folder.</p>
+        <button id="chooseFolderButton" class="primary-button host-desktop">Choose folder</button>
       </section>
 
       <section id="wall" class="wall" aria-label="Media wall"></section>
@@ -21,10 +22,11 @@
 
       <aside id="debugPanel" class="debug-panel hidden" aria-label="Debug settings">
         <div class="panel-title">Menu</div>
+        <button id="debugChooseFolderButton" class="panel-button host-desktop">Choose folder</button>
         <button id="pauseButton" class="panel-button">Pause random swaps</button>
         <button id="fullscreenButton" class="panel-button">Toggle fullscreen</button>
-        <button id="refreshButton" class="panel-button">Refresh media</button>
-        <form method="post" action="/logout">
+        <button id="refreshButton" class="panel-button host-web">Refresh media</button>
+        <form id="logoutForm" class="host-web" method="post" action="/logout">
           <button class="panel-button" type="submit">Log out</button>
         </form>
         <label>

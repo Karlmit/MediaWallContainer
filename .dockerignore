@@ -2,5 +2,6 @@ node_modules
 dist
 out
 dist-latest
+Media-Wall-New
 .git
 npm-debug.log*

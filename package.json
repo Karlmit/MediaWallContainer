@@ -1,14 +1,21 @@
 {
   "name": "media-wall",
-  "version": "0.2.0",
-  "description": "A Docker-hostable media wall for images and videos.",
+  "version": "0.3.0",
+  "description": "A unified desktop and Docker media wall for images and videos.",
   "author": "KWA",
-  "main": "src/server.js",
+  "main": "src/desktop/main.js",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "node src/server.js"
+    "start": "node src/server/server.js",
+    "start:web": "node src/server/server.js",
+    "start:desktop": "electron .",
+    "build:desktop": "electron-packager . \"Media Wall\" --platform=win32 --arch=x64 --out=dist-latest --overwrite --ignore=\"^/dist[^/\\\\]*($|[/\\\\])\" --ignore=\"^/Media-Wall-New($|[/\\\\])\"",
+    "check": "node --check src/server/server.js && node --check src/desktop/main.js && node --check src/desktop/preload.js && node --check src/renderer/app.js && node --check src/shared/media.js"
   },
   "dependencies": {
     "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.0.0",
+    "electron": "^41.3.0"
   }
 }
