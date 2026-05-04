@@ -33,7 +33,8 @@ const controls = {
 
 const STORAGE_KEY = "mediaWall.settings.v2";
 const REFRESH_MS = 10000;
-const host = window.mediaWall?.mode === "desktop" ? "desktop" : "web";
+const queryHost = new URLSearchParams(window.location.search).get("host");
+const host = window.mediaWall?.mode === "desktop" || queryHost === "desktop" ? "desktop" : "web";
 
 const state = {
   folder: null,
@@ -678,11 +679,11 @@ function reconcileItemCount() {
 function updateEmptyState() {
   const hasMedia = state.media.length > 0;
   emptyState.classList.toggle("hidden", hasMedia);
-  topBar.classList.toggle("hidden", !hasMedia);
+  topBar.classList.toggle("hidden", host !== "desktop" && !hasMedia);
   if (!hasMedia) {
     emptyMessage.textContent = state.allMedia.length
       ? "All mounted media is hidden by the subfolder filters."
-      : "No media found in the mounted folder.";
+      : host === "desktop" ? "Choose a media folder to start." : "No media found in the mounted folder.";
   }
 }
 
@@ -725,6 +726,11 @@ function loadFolderResult(result, resetWall = false) {
 }
 
 async function chooseDesktopFolder() {
+  if (!window.mediaWall?.chooseFolder) {
+    emptyState.classList.remove("hidden");
+    emptyMessage.textContent = "The desktop bridge did not load. Restart MediaWall and try again.";
+    return;
+  }
   const result = await window.mediaWall.chooseFolder();
   if (!result) return;
   loadFolderResult(result, true);
@@ -733,10 +739,16 @@ async function chooseDesktopFolder() {
 
 async function restoreDesktopFolder() {
   const saved = applySavedSettings();
-  if (!saved.folder) return;
+  if (!saved.folder || !window.mediaWall?.scanFolder) {
+    updateEmptyState();
+    return;
+  }
 
   const result = await window.mediaWall.scanFolder(saved.folder);
-  if (!result) return;
+  if (!result) {
+    updateEmptyState();
+    return;
+  }
 
   loadFolderResult(result, true);
   window.mediaWall.watchFolder(state.folder);
@@ -993,8 +1005,9 @@ function initializeHost() {
   if (host === "desktop") {
     emptyState.classList.remove("hidden");
     emptyMessage.textContent = "Choose a media folder to start.";
+    topBar.classList.remove("hidden");
     restoreDesktopFolder();
-    window.mediaWall.onMediaUpdated(({ folder, media, subfolders }) => {
+    window.mediaWall?.onMediaUpdated?.(({ folder, media, subfolders }) => {
       if (folder !== state.folder) return;
       state.allMedia = media;
       state.subfolders = subfolders || [];

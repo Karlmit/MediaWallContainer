@@ -22,7 +22,9 @@ async function createWindow() {
     }
   });
 
-  await win.loadFile(path.join(__dirname, "..", "renderer", "index.html"));
+  await win.loadFile(path.join(__dirname, "..", "renderer", "index.html"), {
+    query: { host: "desktop" }
+  });
 }
 
 function createDesktopItem({ fullPath, name, type }) {
