@@ -23,6 +23,16 @@ Both versions use the same shared wall UI, so feature updates should land in bot
 - Videos are protected from random replacement until they have completed at least once.
 - Docker version includes password login, mounted-folder configuration, FFmpeg fallback transcoding, background pre-cache, and cache cleanup for browser-incompatible videos.
 
+## Windows Desktop App
+
+Download the latest Windows zip from:
+
+https://github.com/Karlmit/MediaWall/releases
+
+Extract the zip and run `Media Wall.exe`.
+
+The desktop app asks you to choose a folder the first time it opens. It remembers the last folder, watches it for changes, and uses the same wall controls as the Docker version. This is the easiest install if you just want to run MediaWall directly on a Windows machine without hosting it on a server.
+
 ## Unraid Compose
 
 Use the published Docker image:
@@ -100,16 +110,6 @@ services:
 During first cache warmup, start with `TRANSCODE_CONCURRENCY=1` or `2`. Your Intel Core i5-14600K should handle VAAPI very well, but playback and background transcoding still share the same iGPU and storage.
 
 Open the app and press `Shift+D` to view active transcodes, queued files, recent completed/failed jobs, and recent server log events without opening the Docker log stream. Successful hardware jobs show `ready vaapi`; fallback jobs show `ready software`.
-
-## Windows Desktop App
-
-Download the latest Windows zip from:
-
-https://github.com/Karlmit/MediaWall/releases
-
-Extract it and run `Media Wall.exe`.
-
-The desktop app asks you to choose a folder. It remembers the last folder and watches it for changes.
 
 ## Local Docker Build
 
