@@ -16,6 +16,7 @@ Both versions use the same shared wall UI, so feature updates should land in bot
 - Supports crop-to-fill or contain mode.
 - Mouse wheel changes visible item count.
 - Space pauses/resumes random swaps.
+- Shift+D opens the Docker diagnostics view with transcode status and recent server logs.
 - ArrowRight refreshes the visible set.
 - ArrowUp/ArrowDown adjusts visible item count.
 - Right-click tiles to select them, then middle-click to show only selected tiles.
@@ -97,6 +98,8 @@ services:
 ```
 
 During first cache warmup, start with `TRANSCODE_CONCURRENCY=1` or `2`. Your Intel Core i5-14600K should handle VAAPI very well, but playback and background transcoding still share the same iGPU and storage.
+
+Open the app and press `Shift+D` to view active transcodes, queued files, recent completed/failed jobs, and recent server log events without opening the Docker log stream. Successful hardware jobs show `ready vaapi`; fallback jobs show `ready software`.
 
 ## Windows Desktop App
 

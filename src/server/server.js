@@ -20,26 +20,41 @@ const password = process.env.MEDIA_PASSWORD || "change-me";
 const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 const cookieName = "media_wall_session";
 const activeTranscodes = new Map();
+const activeTranscodeDetails = new Map();
 const probeCache = new Map();
 const transcodeQueue = [];
 const queuedTranscodes = new Set();
+const recentLogEvents = [];
 let activeTranscodeCount = 0;
 let manifest = { version: 1, entries: {} };
 let manifestWriteTimer = null;
 
-function logInfo(message, details = {}) {
-  const detailText = Object.entries(details)
+function formatLogDetails(details) {
+  return Object.entries(details)
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
     .join(" ");
+}
+
+function rememberLogEvent(level, message, details) {
+  recentLogEvents.push({
+    at: new Date().toISOString(),
+    level,
+    message,
+    details
+  });
+  if (recentLogEvents.length > 200) recentLogEvents.splice(0, recentLogEvents.length - 200);
+}
+
+function logInfo(message, details = {}) {
+  rememberLogEvent("info", message, details);
+  const detailText = formatLogDetails(details);
   console.log(`[mediawall] ${message}${detailText ? ` ${detailText}` : ""}`);
 }
 
 function logError(message, details = {}) {
-  const detailText = Object.entries(details)
-    .filter(([, value]) => value !== undefined && value !== null && value !== "")
-    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
-    .join(" ");
+  rememberLogEvent("error", message, details);
+  const detailText = formatLogDetails(details);
   console.error(`[mediawall] ${message}${detailText ? ` ${detailText}` : ""}`);
 }
 
@@ -279,10 +294,57 @@ function qsvTranscodeArgs(inputPath, outputPath) {
 }
 
 async function runFfmpeg(args) {
-  await runProcess("ffmpeg", args);
+  await runFfmpegWithProgress(args);
 }
 
-async function transcodeWithFallback(fullPath, tempPath) {
+function parseFfmpegTimestamp(value) {
+  const match = /^(\d+):(\d+):(\d+(?:\.\d+)?)$/.exec(value);
+  if (!match) return null;
+  return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+}
+
+function runFfmpegWithProgress(args, onProgress) {
+  return new Promise((resolve, reject) => {
+    const progressArgs = [args[0], "-progress", "pipe:1", "-nostats", ...args.slice(1)];
+    const child = spawn("ffmpeg", progressArgs, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+
+    function handleProgressLine(line) {
+      const [key, rawValue] = line.trim().split("=");
+      if (!key || rawValue === undefined) return;
+
+      if (key === "out_time_ms") {
+        onProgress?.({ currentSeconds: Number(rawValue) / 1000000 });
+      } else if (key === "out_time") {
+        const currentSeconds = parseFfmpegTimestamp(rawValue);
+        if (currentSeconds !== null) onProgress?.({ currentSeconds });
+      } else if (key === "speed") {
+        onProgress?.({ speed: rawValue });
+      } else if (key === "progress") {
+        onProgress?.({ progress: rawValue });
+      }
+    }
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      const lines = stdout.split(/\r?\n/);
+      stdout = lines.pop() || "";
+      for (const line of lines) handleProgressLine(line);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 8000) stderr = stderr.slice(-8000);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) return resolve();
+      return reject(new Error(stderr || `ffmpeg exited with code ${code}`));
+    });
+  });
+}
+
+async function transcodeWithFallback(fullPath, tempPath, onProgress) {
   const accelModes = [];
   if (transcodeAccel === "vaapi" || transcodeAccel === "auto") accelModes.push("vaapi");
   if (transcodeAccel === "qsv") accelModes.push("qsv");
@@ -290,7 +352,7 @@ async function transcodeWithFallback(fullPath, tempPath) {
   for (const mode of accelModes) {
     try {
       const args = mode === "qsv" ? qsvTranscodeArgs(fullPath, tempPath) : vaapiTranscodeArgs(fullPath, tempPath);
-      await runFfmpeg(args);
+      await runFfmpegWithProgress(args, onProgress);
       return mode;
     } catch (error) {
       await fs.rm(tempPath, { force: true });
@@ -302,7 +364,7 @@ async function transcodeWithFallback(fullPath, tempPath) {
     }
   }
 
-  await runFfmpeg(softwareTranscodeArgs(fullPath, tempPath));
+  await runFfmpegWithProgress(softwareTranscodeArgs(fullPath, tempPath), onProgress);
   return "software";
 }
 
@@ -327,6 +389,7 @@ async function probeVideo(relativePath, fullPath) {
     const videoCodec = (video?.codec_name || "").toLowerCase();
     const audioCodec = (audio?.codec_name || "").toLowerCase();
     const pixelFormat = (video?.pix_fmt || "").toLowerCase();
+    const durationSeconds = Number(video?.duration || data.format?.duration || 0) || null;
     const isBrowserMp4 = container.includes("mov") || container.includes("mp4") || container.includes("m4a") || container.includes("3gp") || container.includes("3g2") || container.includes("mj2");
     const isBrowserWebm = container.includes("webm");
     const supportedMp4Video = ["h264", "av1"].includes(videoCodec);
@@ -337,7 +400,7 @@ async function probeVideo(relativePath, fullPath) {
     const supportedAudio = (isBrowserMp4 && supportedMp4Audio) || (isBrowserWebm && supportedWebmAudio);
     const supportedPixelFormat = !pixelFormat || pixelFormat === "yuv420p";
     const browserPlayable = (isBrowserMp4 || isBrowserWebm) && supportedVideo && supportedAudio && supportedPixelFormat;
-    const probe = { browserPlayable, videoCodec, audioCodec, pixelFormat, container };
+    const probe = { browserPlayable, videoCodec, audioCodec, pixelFormat, container, durationSeconds };
     probeCache.set(relativePath, { signature, probe });
     return probe;
   } catch (error) {
@@ -358,12 +421,25 @@ async function transcodeToMp4(relativePath, fullPath) {
 
   const transcode = (async () => {
     const startedAt = Date.now();
+    const probe = await probeVideo(relativePath, fullPath);
     await fs.mkdir(transcodeCacheRoot, { recursive: true });
     const tempPath = `${cachePath}.${process.pid}.${Date.now()}.tmp.mp4`;
     entry.status = "transcoding";
     entry.error = null;
     entry.updatedAt = new Date().toISOString();
     scheduleManifestWrite();
+    const activeDetails = {
+      source: relativePath,
+      cacheFile: entry.cacheFile,
+      requestedMode: transcodeAccel,
+      status: "transcoding",
+      startedAt: new Date(startedAt).toISOString(),
+      durationSeconds: probe.durationSeconds,
+      currentSeconds: 0,
+      speed: null,
+      percent: null
+    };
+    activeTranscodeDetails.set(cachePath, activeDetails);
     logInfo("transcode_start", {
       source: relativePath,
       requestedMode: transcodeAccel,
@@ -372,7 +448,16 @@ async function transcodeToMp4(relativePath, fullPath) {
       queueWaiting: transcodeQueue.length
     });
 
-    const transcodeMode = await transcodeWithFallback(fullPath, tempPath);
+    const transcodeMode = await transcodeWithFallback(fullPath, tempPath, (progress) => {
+      if (progress.currentSeconds !== undefined) {
+        activeDetails.currentSeconds = Math.max(activeDetails.currentSeconds || 0, progress.currentSeconds);
+        if (activeDetails.durationSeconds) {
+          activeDetails.percent = Math.min(99, Math.round((activeDetails.currentSeconds / activeDetails.durationSeconds) * 100));
+        }
+      }
+      if (progress.speed !== undefined) activeDetails.speed = progress.speed;
+      activeDetails.updatedAt = new Date().toISOString();
+    });
 
     await fs.rename(tempPath, cachePath);
     const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
@@ -409,6 +494,7 @@ async function transcodeToMp4(relativePath, fullPath) {
     throw error;
   } finally {
     activeTranscodes.delete(cachePath);
+    activeTranscodeDetails.delete(cachePath);
   }
 }
 
@@ -436,6 +522,55 @@ function queueTranscode(relativePath, fullPath) {
     queueActive: activeTranscodeCount
   });
   processTranscodeQueue();
+}
+
+function diagnosticsSnapshot() {
+  const entries = Object.values(manifest.entries);
+  const ready = entries.filter((entry) => entry.status === "ready");
+  const failed = entries.filter((entry) => entry.status === "failed");
+  const pending = entries.filter((entry) => entry.status === "pending");
+
+  return {
+    app: {
+      name: "MediaWall",
+      version
+    },
+    transcode: {
+      enabled: transcodeEnabled,
+      precache: precacheVideos,
+      concurrency: transcodeConcurrency,
+      accel: transcodeAccel,
+      vaapiDevice,
+      libvaDriver: process.env.LIBVA_DRIVER_NAME || "",
+      activeCount: activeTranscodeDetails.size,
+      workerSlotsActive: activeTranscodeCount,
+      queueWaiting: transcodeQueue.length,
+      cachedCount: ready.length,
+      failedCount: failed.length,
+      pendingCount: pending.length,
+      queued: transcodeQueue.map((job, index) => ({
+        source: job.relativePath,
+        position: index + 1
+      })),
+      active: [...activeTranscodeDetails.values()].map((job) => ({
+        ...job,
+        elapsedSeconds: Math.round((Date.now() - Date.parse(job.startedAt)) / 1000)
+      })),
+      recent: entries
+        .filter((entry) => entry.status === "ready" || entry.status === "failed")
+        .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
+        .slice(0, 20)
+        .map((entry) => ({
+          source: entry.sourcePath,
+          status: entry.status,
+          mode: entry.transcodeMode,
+          error: entry.error,
+          updatedAt: entry.updatedAt,
+          cacheFile: entry.cacheFile
+        }))
+    },
+    logs: recentLogEvents.slice(-80)
+  };
 }
 
 function createServerItem({ relativePath, name, type, isVideo }) {
@@ -538,6 +673,10 @@ app.use(express.static(path.join(__dirname, "..", "renderer")));
 
 app.get("/api/app-info", async (_req, res) => {
   res.json({ name: "MediaWall", version });
+});
+
+app.get("/api/diagnostics", async (_req, res) => {
+  res.json(diagnosticsSnapshot());
 });
 
 app.get("/api/media", async (_req, res) => {

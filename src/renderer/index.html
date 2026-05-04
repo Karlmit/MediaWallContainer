@@ -56,6 +56,33 @@
           <div id="subfolderList" class="subfolder-list"></div>
         </section>
       </aside>
+
+      <section id="diagnosticsPanel" class="diagnostics-panel hidden" aria-label="Transcode diagnostics">
+        <header class="diagnostics-header">
+          <div>
+            <div class="panel-title">Transcodes and logs</div>
+            <div id="diagnosticsMeta" class="diagnostics-meta">Status</div>
+          </div>
+          <button id="diagnosticsCloseButton" class="icon-button" title="Close diagnostics" aria-label="Close diagnostics">Close</button>
+        </header>
+        <div id="diagnosticsSummary" class="diagnostics-summary"></div>
+        <section class="diagnostics-section">
+          <div class="section-title">Active transcodes</div>
+          <div id="activeTranscodeList" class="diagnostics-list"></div>
+        </section>
+        <section class="diagnostics-section">
+          <div class="section-title">Queue</div>
+          <div id="queuedTranscodeList" class="diagnostics-list"></div>
+        </section>
+        <section class="diagnostics-section">
+          <div class="section-title">Recent results</div>
+          <div id="recentTranscodeList" class="diagnostics-list"></div>
+        </section>
+        <section class="diagnostics-section">
+          <div class="section-title">Recent logs</div>
+          <div id="diagnosticsLogList" class="log-list"></div>
+        </section>
+      </section>
     </main>
     <script src="app.js"></script>
   </body>

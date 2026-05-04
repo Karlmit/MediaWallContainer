@@ -12,6 +12,14 @@ const fullscreenButton = document.querySelector("#fullscreenButton");
 const refreshButton = document.querySelector("#refreshButton");
 const statusSplash = document.querySelector("#statusSplash");
 const subfolderList = document.querySelector("#subfolderList");
+const diagnosticsPanel = document.querySelector("#diagnosticsPanel");
+const diagnosticsCloseButton = document.querySelector("#diagnosticsCloseButton");
+const diagnosticsMeta = document.querySelector("#diagnosticsMeta");
+const diagnosticsSummary = document.querySelector("#diagnosticsSummary");
+const activeTranscodeList = document.querySelector("#activeTranscodeList");
+const queuedTranscodeList = document.querySelector("#queuedTranscodeList");
+const recentTranscodeList = document.querySelector("#recentTranscodeList");
+const diagnosticsLogList = document.querySelector("#diagnosticsLogList");
 const hostDesktopElements = document.querySelectorAll(".host-desktop");
 const hostWebElements = document.querySelectorAll(".host-web");
 
@@ -43,6 +51,7 @@ const state = {
   refreshTimer: null,
   statusSplashTimer: null,
   videoWatchTimer: null,
+  diagnosticsTimer: null,
   paused: false
 };
 
@@ -772,6 +781,190 @@ function setPanelVersion(version) {
   panelTitle.textContent = version ? `MediaWall - v${version}` : "MediaWall";
 }
 
+function formatSeconds(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "";
+  const total = Math.round(seconds);
+  const minutes = Math.floor(total / 60);
+  const remainder = total % 60;
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+function formatLogDetails(details = {}) {
+  return Object.entries(details)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join(" ");
+}
+
+function renderEmptyDiagnostics(container, text) {
+  container.textContent = "";
+  const empty = document.createElement("div");
+  empty.className = "diagnostics-empty";
+  empty.textContent = text;
+  container.append(empty);
+}
+
+function renderDiagnosticsSummary(data) {
+  const transcode = data.transcode || {};
+  diagnosticsMeta.textContent = data.app?.version ? `MediaWall - v${data.app.version}` : "MediaWall";
+  diagnosticsSummary.textContent = "";
+
+  const items = [
+    ["Active", transcode.activeCount || 0],
+    ["Queued", transcode.queueWaiting || 0],
+    ["Cached", transcode.cachedCount || 0],
+    ["Failed", transcode.failedCount || 0],
+    ["Mode", transcode.accel || "unknown"],
+    ["Device", transcode.vaapiDevice || "none"]
+  ];
+
+  for (const [label, value] of items) {
+    const tile = document.createElement("div");
+    tile.className = "diagnostics-stat";
+    const labelElement = document.createElement("span");
+    labelElement.textContent = label;
+    const valueElement = document.createElement("strong");
+    valueElement.textContent = String(value);
+    tile.append(labelElement, valueElement);
+    diagnosticsSummary.append(tile);
+  }
+}
+
+function renderActiveTranscodes(active = []) {
+  activeTranscodeList.textContent = "";
+  if (!active.length) {
+    renderEmptyDiagnostics(activeTranscodeList, "No active transcodes");
+    return;
+  }
+
+  for (const job of active) {
+    const row = document.createElement("article");
+    row.className = "diagnostics-row";
+
+    const title = document.createElement("div");
+    title.className = "diagnostics-row-title";
+    title.textContent = job.source || "Unknown source";
+
+    const detail = document.createElement("div");
+    detail.className = "diagnostics-row-detail";
+    const current = formatSeconds(job.currentSeconds);
+    const duration = formatSeconds(job.durationSeconds);
+    const percent = job.percent !== null && job.percent !== undefined ? `${job.percent}%` : "working";
+    const speed = job.speed ? ` ${job.speed}` : "";
+    detail.textContent = `${job.requestedMode || "auto"} ${percent}${speed}${current ? ` ${current}${duration ? ` / ${duration}` : ""}` : ""}`;
+
+    const progress = document.createElement("div");
+    progress.className = "diagnostics-progress";
+    const bar = document.createElement("span");
+    bar.style.width = `${Math.max(4, Math.min(100, job.percent || 8))}%`;
+    progress.append(bar);
+
+    row.append(title, detail, progress);
+    activeTranscodeList.append(row);
+  }
+}
+
+function renderQueuedTranscodes(queued = []) {
+  queuedTranscodeList.textContent = "";
+  if (!queued.length) {
+    renderEmptyDiagnostics(queuedTranscodeList, "No queued transcodes");
+    return;
+  }
+
+  for (const job of queued.slice(0, 30)) {
+    const row = document.createElement("article");
+    row.className = "diagnostics-row compact";
+    row.textContent = `${job.position}. ${job.source}`;
+    queuedTranscodeList.append(row);
+  }
+}
+
+function renderRecentTranscodes(recent = []) {
+  recentTranscodeList.textContent = "";
+  if (!recent.length) {
+    renderEmptyDiagnostics(recentTranscodeList, "No completed transcodes yet");
+    return;
+  }
+
+  for (const job of recent.slice(0, 20)) {
+    const row = document.createElement("article");
+    row.className = `diagnostics-row ${job.status === "failed" ? "error" : ""}`;
+    const title = document.createElement("div");
+    title.className = "diagnostics-row-title";
+    title.textContent = job.source || "Unknown source";
+    const detail = document.createElement("div");
+    detail.className = "diagnostics-row-detail";
+    detail.textContent = job.status === "failed" ? `failed ${job.error || ""}` : `ready ${job.mode || ""}`;
+    row.append(title, detail);
+    recentTranscodeList.append(row);
+  }
+}
+
+function renderDiagnosticsLogs(logs = []) {
+  diagnosticsLogList.textContent = "";
+  if (!logs.length) {
+    renderEmptyDiagnostics(diagnosticsLogList, "No log events yet");
+    return;
+  }
+
+  for (const log of logs.slice().reverse()) {
+    const row = document.createElement("article");
+    row.className = `log-row ${log.level === "error" ? "error" : ""}`;
+    const at = new Date(log.at);
+    const time = Number.isNaN(at.getTime()) ? "" : at.toLocaleTimeString();
+    const details = formatLogDetails(log.details);
+    row.textContent = `${time} ${log.message}${details ? ` ${details}` : ""}`;
+    diagnosticsLogList.append(row);
+  }
+}
+
+async function refreshDiagnostics() {
+  if (host !== "web") {
+    diagnosticsMeta.textContent = window.mediaWall?.version ? `MediaWall - v${window.mediaWall.version}` : "MediaWall";
+    diagnosticsSummary.textContent = "";
+    renderEmptyDiagnostics(diagnosticsSummary, "Diagnostics are available in the Docker web app");
+    renderEmptyDiagnostics(activeTranscodeList, "No server transcodes in desktop mode");
+    renderEmptyDiagnostics(queuedTranscodeList, "No server queue in desktop mode");
+    renderEmptyDiagnostics(recentTranscodeList, "No server cache in desktop mode");
+    renderEmptyDiagnostics(diagnosticsLogList, "No server logs in desktop mode");
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/diagnostics", { cache: "no-store" });
+    if (response.status === 401) {
+      window.location.href = "/login";
+      return;
+    }
+    if (!response.ok) throw new Error(`Failed to load diagnostics: ${response.status}`);
+    const data = await response.json();
+    renderDiagnosticsSummary(data);
+    renderActiveTranscodes(data.transcode?.active || []);
+    renderQueuedTranscodes(data.transcode?.queued || []);
+    renderRecentTranscodes(data.transcode?.recent || []);
+    renderDiagnosticsLogs(data.logs || []);
+  } catch (error) {
+    diagnosticsMeta.textContent = "MediaWall";
+    diagnosticsSummary.textContent = "";
+    renderEmptyDiagnostics(diagnosticsSummary, error.message);
+  }
+}
+
+function setDiagnosticsVisible(visible) {
+  diagnosticsPanel.classList.toggle("hidden", !visible);
+  clearInterval(state.diagnosticsTimer);
+  state.diagnosticsTimer = null;
+
+  if (visible) {
+    refreshDiagnostics();
+    state.diagnosticsTimer = setInterval(refreshDiagnostics, 1500);
+  }
+}
+
+function toggleDiagnostics() {
+  setDiagnosticsVisible(diagnosticsPanel.classList.contains("hidden"));
+}
+
 async function loadAppInfo() {
   if (host === "desktop") {
     setPanelVersion(window.mediaWall.version);
@@ -816,6 +1009,7 @@ function initializeHost() {
 }
 
 menuButton.addEventListener("click", () => debugPanel.classList.toggle("hidden"));
+diagnosticsCloseButton.addEventListener("click", () => setDiagnosticsVisible(false));
 if (chooseFolderButton) chooseFolderButton.addEventListener("click", chooseDesktopFolder);
 if (debugChooseFolderButton) debugChooseFolderButton.addEventListener("click", chooseDesktopFolder);
 pauseButton.addEventListener("click", togglePause);
@@ -867,6 +1061,11 @@ window.addEventListener("keydown", (event) => {
   if (event.ctrlKey && event.key.toLowerCase() === "d") {
     event.preventDefault();
     debugPanel.classList.toggle("hidden");
+  }
+  if (event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "d") {
+    event.preventDefault();
+    toggleDiagnostics();
+    return;
   }
   if (!event.ctrlKey && !event.altKey && !event.metaKey && event.key === "ArrowRight") {
     event.preventDefault();
