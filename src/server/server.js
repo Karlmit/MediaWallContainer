@@ -27,6 +27,22 @@ let activeTranscodeCount = 0;
 let manifest = { version: 1, entries: {} };
 let manifestWriteTimer = null;
 
+function logInfo(message, details = {}) {
+  const detailText = Object.entries(details)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join(" ");
+  console.log(`[mediawall] ${message}${detailText ? ` ${detailText}` : ""}`);
+}
+
+function logError(message, details = {}) {
+  const detailText = Object.entries(details)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join(" ");
+  console.error(`[mediawall] ${message}${detailText ? ` ${detailText}` : ""}`);
+}
+
 app.disable("x-powered-by");
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
@@ -155,7 +171,7 @@ function scheduleManifestWrite() {
   clearTimeout(manifestWriteTimer);
   manifestWriteTimer = setTimeout(() => {
     writeManifestNow().catch((error) => {
-      console.error("Failed to write transcode manifest:", error.message);
+      logError("manifest_write_failed", { error: error.message });
     });
   }, 350);
 }
@@ -278,7 +294,11 @@ async function transcodeWithFallback(fullPath, tempPath) {
       return mode;
     } catch (error) {
       await fs.rm(tempPath, { force: true });
-      console.error(`${mode.toUpperCase()} transcode failed, falling back to software:`, error.message);
+      logError("transcode_accel_failed_falling_back", {
+        mode,
+        device: vaapiDevice,
+        error: error.message
+      });
     }
   }
 
@@ -337,21 +357,36 @@ async function transcodeToMp4(relativePath, fullPath) {
   if (existing) return existing;
 
   const transcode = (async () => {
+    const startedAt = Date.now();
     await fs.mkdir(transcodeCacheRoot, { recursive: true });
     const tempPath = `${cachePath}.${process.pid}.${Date.now()}.tmp.mp4`;
     entry.status = "transcoding";
     entry.error = null;
     entry.updatedAt = new Date().toISOString();
     scheduleManifestWrite();
+    logInfo("transcode_start", {
+      source: relativePath,
+      requestedMode: transcodeAccel,
+      cacheFile: entry.cacheFile,
+      queueActive: activeTranscodeCount,
+      queueWaiting: transcodeQueue.length
+    });
 
     const transcodeMode = await transcodeWithFallback(fullPath, tempPath);
 
     await fs.rename(tempPath, cachePath);
+    const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
     entry.status = "ready";
     entry.cacheFile = path.basename(cachePath);
     entry.transcodeMode = transcodeMode;
     entry.updatedAt = new Date().toISOString();
     scheduleManifestWrite();
+    logInfo("transcode_success", {
+      source: relativePath,
+      mode: transcodeMode,
+      cacheFile: entry.cacheFile,
+      durationSeconds
+    });
     return cachePath;
   })();
 
@@ -366,6 +401,11 @@ async function transcodeToMp4(relativePath, fullPath) {
       failedEntry.updatedAt = new Date().toISOString();
       scheduleManifestWrite();
     }
+    logError("transcode_failed", {
+      source: relativePath,
+      requestedMode: transcodeAccel,
+      error: error.message
+    });
     throw error;
   } finally {
     activeTranscodes.delete(cachePath);
@@ -378,7 +418,7 @@ function processTranscodeQueue() {
     queuedTranscodes.delete(job.relativePath);
     activeTranscodeCount += 1;
     transcodeToMp4(job.relativePath, job.fullPath)
-      .catch((error) => console.error(`Background transcode failed for ${job.relativePath}:`, error.message))
+      .catch((error) => logError("background_transcode_failed", { source: job.relativePath, error: error.message }))
       .finally(() => {
         activeTranscodeCount -= 1;
         processTranscodeQueue();
@@ -390,6 +430,11 @@ function queueTranscode(relativePath, fullPath) {
   if (!transcodeEnabled || queuedTranscodes.has(relativePath)) return;
   queuedTranscodes.add(relativePath);
   transcodeQueue.push({ relativePath, fullPath });
+  logInfo("transcode_queued", {
+    source: relativePath,
+    queueWaiting: transcodeQueue.length,
+    queueActive: activeTranscodeCount
+  });
   processTranscodeQueue();
 }
 
@@ -428,11 +473,17 @@ async function enrichServerMedia(folderData) {
     item.needsTranscode = transcodeEnabled && !probe.browserPlayable;
 
     if (item.needsTranscode && precacheVideos) {
+      logInfo("video_needs_transcode", {
+        source: item.path,
+        videoCodec: item.videoCodec,
+        audioCodec: item.audioCodec,
+        accel: transcodeAccel
+      });
       queueTranscode(item.path, fullPath);
     }
   }));
   cleanupTranscodeCache(folderData.media).catch((error) => {
-    console.error("Failed to clean transcode cache:", error.message);
+    logError("cache_cleanup_failed", { error: error.message });
   });
   return folderData;
 }
@@ -448,6 +499,10 @@ async function cleanupTranscodeCache(media) {
 
     if (entry.cacheFile) {
       await fs.rm(path.join(transcodeCacheRoot, entry.cacheFile), { force: true });
+      logInfo("cache_removed_missing_source", {
+        source: entry.sourcePath,
+        cacheFile: entry.cacheFile
+      });
     }
     delete manifest.entries[sourceKey];
     changed = true;
@@ -501,7 +556,7 @@ app.get("/transcode/*path", async (req, res) => {
     res.type("mp4");
     return res.sendFile(cachePath);
   } catch (error) {
-    console.error(`Failed to transcode ${relativePath}:`, error.message);
+    logError("request_transcode_failed", { source: relativePath, error: error.message });
     return res.sendStatus(500);
   }
 });
@@ -515,15 +570,25 @@ app.get("/media/*path", async (req, res) => {
 
 async function start() {
   await loadManifest();
+  const vaapiDeviceVisible = await pathExists(vaapiDevice);
   app.listen(port, () => {
-    console.log(`Media Wall listening on port ${port}`);
-    console.log(`Serving media from ${mediaRoot}`);
-    console.log(`Transcode cache at ${transcodeCacheRoot}`);
-    console.log(`Transcode acceleration: ${transcodeAccel}`);
+    logInfo("server_started", {
+      version,
+      port,
+      mediaRoot,
+      transcodeCacheRoot,
+      transcodeEnabled,
+      precacheVideos,
+      transcodeConcurrency,
+      transcodeAccel,
+      vaapiDevice,
+      vaapiDeviceVisible,
+      libvaDriver: process.env.LIBVA_DRIVER_NAME || ""
+    });
   });
 }
 
 start().catch((error) => {
-  console.error("Failed to start Media Wall:", error);
+  logError("server_start_failed", { error: error.message });
   process.exit(1);
 });
