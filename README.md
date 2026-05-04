@@ -29,7 +29,7 @@ Use the published Docker image:
 ```yaml
 services:
   media-wall:
-    image: ghcr.io/karlmit/mediawallcontainer:latest
+    image: ghcr.io/karlmit/mediawall:latest
     container_name: media-wall
     ports:
       - "3000:3000"
@@ -49,13 +49,13 @@ volumes:
 
 Change `MEDIA_PASSWORD`, `SESSION_SECRET`, and `/mnt/user/Media`.
 
-With `image: ghcr.io/karlmit/mediawallcontainer:latest`, Unraid can check the registry image for updates. Rebuilds from GitHub source with `build:` do not reliably show up in Unraid's update checker.
+With `image: ghcr.io/karlmit/mediawall:latest`, Unraid can check the registry image for updates. Rebuilds from GitHub source with `build:` do not reliably show up in Unraid's update checker.
 
 ## Windows Desktop App
 
 Download the latest Windows zip from:
 
-https://github.com/Karlmit/MediaWallContainer/releases
+https://github.com/Karlmit/MediaWall/releases
 
 Extract it and run `Media Wall.exe`.
 

@@ -1,6 +1,6 @@
 services:
   media-wall:
-    image: ghcr.io/karlmit/mediawallcontainer:latest
+    image: ghcr.io/karlmit/mediawall:latest
     ports:
       - "3000:3000"
     environment:

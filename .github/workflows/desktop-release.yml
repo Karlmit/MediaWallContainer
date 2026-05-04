@@ -43,4 +43,4 @@ jobs:
             Download the Windows zip, extract it, and run `Media Wall.exe`.
 
             Docker image:
-            `ghcr.io/karlmit/mediawallcontainer:${{ github.ref_name }}`
+            `ghcr.io/karlmit/mediawall:${{ github.ref_name }}`
