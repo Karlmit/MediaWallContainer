@@ -983,7 +983,7 @@ function toggleDiagnostics() {
 
 async function loadAppInfo() {
   if (host === "desktop") {
-    setPanelVersion(window.mediaWall.version);
+    setPanelVersion(window.mediaWall?.version || null);
     return;
   }
 
@@ -1031,7 +1031,7 @@ if (chooseFolderButton) chooseFolderButton.addEventListener("click", chooseDeskt
 if (debugChooseFolderButton) debugChooseFolderButton.addEventListener("click", chooseDesktopFolder);
 pauseButton.addEventListener("click", togglePause);
 fullscreenButton.addEventListener("click", () => {
-  if (host === "desktop") {
+  if (host === "desktop" && window.mediaWall?.toggleFullscreen) {
     window.mediaWall.toggleFullscreen();
   } else {
     toggleFullscreen().catch(() => {});
@@ -1067,7 +1067,7 @@ window.addEventListener("auxclick", (event) => {
 window.addEventListener("keydown", (event) => {
   if (host === "desktop" && event.ctrlKey && event.code === "Space") {
     event.preventDefault();
-    window.mediaWall.quitApp();
+    window.mediaWall?.quitApp?.();
     return;
   }
   if (!event.ctrlKey && !event.altKey && !event.metaKey && event.code === "Space") {
@@ -1101,7 +1101,7 @@ window.addEventListener("keydown", (event) => {
   }
   if (event.key === "F11") {
     event.preventDefault();
-    if (host === "desktop") {
+    if (host === "desktop" && window.mediaWall?.toggleFullscreen) {
       window.mediaWall.toggleFullscreen();
     } else {
       toggleFullscreen().catch(() => {});
