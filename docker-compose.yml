@@ -10,6 +10,12 @@ services:
       TRANSCODE_CACHE_DIR: "/cache"
       PRECACHE_VIDEOS: "true"
       TRANSCODE_CONCURRENCY: "1"
+      TRANSCODE_ACCEL: "software"
+      VAAPI_DEVICE: "/dev/dri/renderD128"
+      LIBVA_DRIVER_NAME: "iHD"
+    # Uncomment on Unraid/Linux with Intel iGPU passthrough.
+    # devices:
+    #   - "/dev/dri:/dev/dri"
     volumes:
       - "C:/Path/To/Your/Media:/media:ro"
       - "media-wall-cache:/cache"

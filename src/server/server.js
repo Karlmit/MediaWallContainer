@@ -14,6 +14,8 @@ const transcodeManifestPath = path.join(transcodeCacheRoot, "manifest.json");
 const transcodeEnabled = process.env.TRANSCODE_ENABLED !== "false";
 const precacheVideos = process.env.PRECACHE_VIDEOS !== "false";
 const transcodeConcurrency = Math.max(1, Number(process.env.TRANSCODE_CONCURRENCY || 1));
+const transcodeAccel = (process.env.TRANSCODE_ACCEL || "software").toLowerCase();
+const vaapiDevice = process.env.VAAPI_DEVICE || "/dev/dri/renderD128";
 const password = process.env.MEDIA_PASSWORD || "change-me";
 const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 const cookieName = "media_wall_session";
@@ -208,6 +210,82 @@ function runProcess(command, args) {
   });
 }
 
+function softwareTranscodeArgs(inputPath, outputPath) {
+  return [
+    "-y",
+    "-i", inputPath,
+    "-map", "0:v:0",
+    "-map", "0:a:0?",
+    "-c:v", "libx264",
+    "-preset", "veryfast",
+    "-crf", "23",
+    "-pix_fmt", "yuv420p",
+    "-c:a", "aac",
+    "-b:a", "160k",
+    "-movflags", "+faststart",
+    outputPath
+  ];
+}
+
+function vaapiTranscodeArgs(inputPath, outputPath) {
+  return [
+    "-y",
+    "-vaapi_device", vaapiDevice,
+    "-i", inputPath,
+    "-map", "0:v:0",
+    "-map", "0:a:0?",
+    "-vf", "format=nv12,hwupload",
+    "-c:v", "h264_vaapi",
+    "-qp", "23",
+    "-c:a", "aac",
+    "-b:a", "160k",
+    "-movflags", "+faststart",
+    outputPath
+  ];
+}
+
+function qsvTranscodeArgs(inputPath, outputPath) {
+  return [
+    "-y",
+    "-init_hw_device", `qsv=hw:${vaapiDevice}`,
+    "-filter_hw_device", "hw",
+    "-i", inputPath,
+    "-map", "0:v:0",
+    "-map", "0:a:0?",
+    "-vf", "format=nv12,hwupload=extra_hw_frames=64",
+    "-c:v", "h264_qsv",
+    "-global_quality", "23",
+    "-c:a", "aac",
+    "-b:a", "160k",
+    "-movflags", "+faststart",
+    outputPath
+  ];
+}
+
+async function runFfmpeg(args) {
+  await runProcess("ffmpeg", args);
+}
+
+async function transcodeWithFallback(fullPath, tempPath) {
+  const accelModes = [];
+  if (transcodeAccel === "vaapi" || transcodeAccel === "auto") accelModes.push("vaapi");
+  if (transcodeAccel === "qsv") accelModes.push("qsv");
+
+  for (const mode of accelModes) {
+    try {
+      const args = mode === "qsv" ? qsvTranscodeArgs(fullPath, tempPath) : vaapiTranscodeArgs(fullPath, tempPath);
+      await runFfmpeg(args);
+      return mode;
+    } catch (error) {
+      await fs.rm(tempPath, { force: true });
+      console.error(`${mode.toUpperCase()} transcode failed, falling back to software:`, error.message);
+    }
+  }
+
+  await runFfmpeg(softwareTranscodeArgs(fullPath, tempPath));
+  return "software";
+}
+
 async function probeVideo(relativePath, fullPath) {
   const stats = await fs.stat(fullPath);
   const signature = sourceSignature(relativePath, stats);
@@ -266,37 +344,12 @@ async function transcodeToMp4(relativePath, fullPath) {
     entry.updatedAt = new Date().toISOString();
     scheduleManifestWrite();
 
-    await new Promise((resolve, reject) => {
-      const ffmpeg = spawn("ffmpeg", [
-        "-y",
-        "-i", fullPath,
-        "-map", "0:v:0",
-        "-map", "0:a:0?",
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "23",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", "160k",
-        "-movflags", "+faststart",
-        tempPath
-      ], { stdio: ["ignore", "ignore", "pipe"] });
-
-      let stderr = "";
-      ffmpeg.stderr.on("data", (chunk) => {
-        stderr += chunk.toString();
-        if (stderr.length > 8000) stderr = stderr.slice(-8000);
-      });
-      ffmpeg.on("error", reject);
-      ffmpeg.on("close", (code) => {
-        if (code === 0) return resolve();
-        return reject(new Error(stderr || `ffmpeg exited with code ${code}`));
-      });
-    });
+    const transcodeMode = await transcodeWithFallback(fullPath, tempPath);
 
     await fs.rename(tempPath, cachePath);
     entry.status = "ready";
     entry.cacheFile = path.basename(cachePath);
+    entry.transcodeMode = transcodeMode;
     entry.updatedAt = new Date().toISOString();
     scheduleManifestWrite();
     return cachePath;
@@ -466,6 +519,7 @@ async function start() {
     console.log(`Media Wall listening on port ${port}`);
     console.log(`Serving media from ${mediaRoot}`);
     console.log(`Transcode cache at ${transcodeCacheRoot}`);
+    console.log(`Transcode acceleration: ${transcodeAccel}`);
   });
 }
 

@@ -40,6 +40,12 @@ services:
       TRANSCODE_CACHE_DIR: "/cache"
       PRECACHE_VIDEOS: "true"
       TRANSCODE_CONCURRENCY: "1"
+      TRANSCODE_ACCEL: "software"
+      VAAPI_DEVICE: "/dev/dri/renderD128"
+      LIBVA_DRIVER_NAME: "iHD"
+    # Uncomment on Unraid/Linux with Intel iGPU passthrough.
+    # devices:
+    #   - "/dev/dri:/dev/dri"
     volumes:
       - "/mnt/user/Media:/media:ro"
       - "/mnt/user/appdata/mediawall-cache:/cache"
@@ -57,6 +63,40 @@ Transcoding options:
 - `PRECACHE_VIDEOS=true` scans video codecs and starts converting incompatible files in the background.
 - `TRANSCODE_CONCURRENCY=1` limits how many conversions run at once. Increase only if your server has enough CPU.
 - `TRANSCODE_ENABLED=false` disables Docker-side conversion and lets the browser try original files only.
+- `TRANSCODE_ACCEL=software` uses CPU x264 encoding.
+- `TRANSCODE_ACCEL=vaapi` uses Intel iGPU encoding through `/dev/dri` and falls back to software if the device or encoder fails.
+- `TRANSCODE_ACCEL=auto` tries VAAPI first, then falls back to software.
+
+### Intel iGPU / Quick Sync on Unraid
+
+For Intel CPUs with an iGPU, pass `/dev/dri` into the container and use VAAPI acceleration:
+
+```yaml
+services:
+  media-wall:
+    image: ghcr.io/karlmit/mediawall:latest
+    container_name: media-wall
+    ports:
+      - "3000:3000"
+    environment:
+      MEDIA_PASSWORD: "change-this-password"
+      MEDIA_DIR: "/media"
+      SESSION_SECRET: "change-this-to-a-long-random-string"
+      TRANSCODE_CACHE_DIR: "/cache"
+      PRECACHE_VIDEOS: "true"
+      TRANSCODE_CONCURRENCY: "2"
+      TRANSCODE_ACCEL: "vaapi"
+      VAAPI_DEVICE: "/dev/dri/renderD128"
+      LIBVA_DRIVER_NAME: "iHD"
+    devices:
+      - "/dev/dri:/dev/dri"
+    volumes:
+      - "/mnt/user/Media:/media:ro"
+      - "/mnt/user/appdata/mediawall-cache:/cache"
+    restart: unless-stopped
+```
+
+During first cache warmup, start with `TRANSCODE_CONCURRENCY=1` or `2`. Your Intel Core i5-14600K should handle VAAPI very well, but playback and background transcoding still share the same iGPU and storage.
 
 ## Windows Desktop App
 
