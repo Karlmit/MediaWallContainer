@@ -1,6 +1,6 @@
 {
   "name": "media-wall",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "A unified desktop and Docker media wall for images and videos.",
   "author": "KWA",
   "main": "src/desktop/main.js",

@@ -222,7 +222,8 @@ function createTile(item) {
   const markReady = () => tile.classList.remove("loading");
 
   const media = document.createElement(item.type === "video" ? "video" : "img");
-  media.src = item.url;
+  media.src = item.needsTranscode && item.fallbackUrl ? item.fallbackUrl : item.url;
+  if (item.needsTranscode && item.fallbackUrl) media.dataset.usingFallback = "true";
   media.draggable = false;
 
   if (item.type === "video") {

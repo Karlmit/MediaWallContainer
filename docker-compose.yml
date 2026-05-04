@@ -8,6 +8,8 @@ services:
       MEDIA_DIR: "/media"
       SESSION_SECRET: "change-this-to-a-long-random-string"
       TRANSCODE_CACHE_DIR: "/cache"
+      PRECACHE_VIDEOS: "true"
+      TRANSCODE_CONCURRENCY: "1"
     volumes:
       - "C:/Path/To/Your/Media:/media:ro"
       - "media-wall-cache:/cache"

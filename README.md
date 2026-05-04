@@ -20,7 +20,7 @@ Both versions use the same shared wall UI, so feature updates should land in bot
 - ArrowUp/ArrowDown adjusts visible item count.
 - Right-click tiles to select them, then middle-click to show only selected tiles.
 - Videos are protected from random replacement until they have completed at least once.
-- Docker version includes password login, mounted-folder configuration, and FFmpeg fallback transcoding for browser-incompatible videos.
+- Docker version includes password login, mounted-folder configuration, FFmpeg fallback transcoding, background pre-cache, and cache cleanup for browser-incompatible videos.
 
 ## Unraid Compose
 
@@ -38,18 +38,25 @@ services:
       MEDIA_DIR: "/media"
       SESSION_SECRET: "change-this-to-a-long-random-string"
       TRANSCODE_CACHE_DIR: "/cache"
+      PRECACHE_VIDEOS: "true"
+      TRANSCODE_CONCURRENCY: "1"
     volumes:
       - "/mnt/user/Media:/media:ro"
-      - "media-wall-cache:/cache"
+      - "/mnt/user/appdata/mediawall-cache:/cache"
     restart: unless-stopped
-
-volumes:
-  media-wall-cache:
 ```
 
 Change `MEDIA_PASSWORD`, `SESSION_SECRET`, and `/mnt/user/Media`.
 
 With `image: ghcr.io/karlmit/mediawall:latest`, Unraid can check the registry image for updates. Rebuilds from GitHub source with `build:` do not reliably show up in Unraid's update checker.
+
+The `/cache` mount stores generated browser-compatible MP4 files. Originals are never deleted. When a source video is removed from `/media`, its generated cache file is removed from `/cache` on the next scan. You can point `/cache` at any persistent Unraid path, such as `/mnt/user/appdata/mediawall-cache`.
+
+Transcoding options:
+
+- `PRECACHE_VIDEOS=true` scans video codecs and starts converting incompatible files in the background.
+- `TRANSCODE_CONCURRENCY=1` limits how many conversions run at once. Increase only if your server has enough CPU.
+- `TRANSCODE_ENABLED=false` disables Docker-side conversion and lets the browser try original files only.
 
 ## Windows Desktop App
 
@@ -88,7 +95,7 @@ Supported image files: `jpg`, `jpeg`, `png`, `gif`, `webp`, `bmp`, `avif`.
 
 Supported video files: `mp4`, `webm`, `mov`, `m4v`, `ogg`, `ogv`, `mkv`.
 
-Videos play directly when the browser supports their codecs. If a video fails to play, the server uses FFmpeg to create a cached browser-compatible MP4 fallback in the `media-wall-cache` Docker volume.
+Videos play directly when the browser supports their codecs. The Docker host uses FFprobe to identify videos likely to fail in browsers and uses FFmpeg to create cached browser-compatible MP4 fallbacks in the `media-wall-cache` Docker volume.
 
 ## Development
 
