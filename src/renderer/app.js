@@ -3,6 +3,7 @@ const emptyState = document.querySelector("#emptyState");
 const emptyMessage = document.querySelector("#emptyMessage");
 const topBar = document.querySelector("#topBar");
 const debugPanel = document.querySelector("#debugPanel");
+const panelTitle = document.querySelector("#panelTitle");
 const chooseFolderButton = document.querySelector("#chooseFolderButton");
 const menuButton = document.querySelector("#menuButton");
 const debugChooseFolderButton = document.querySelector("#debugChooseFolderButton");
@@ -720,8 +721,29 @@ function configureHostControls() {
   }
 }
 
+function setPanelVersion(version) {
+  panelTitle.textContent = version ? `MediaWall - v${version}` : "MediaWall";
+}
+
+async function loadAppInfo() {
+  if (host === "desktop") {
+    setPanelVersion(window.mediaWall.version);
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/app-info", { cache: "no-store" });
+    if (!response.ok) throw new Error(`Failed to load app info: ${response.status}`);
+    const appInfo = await response.json();
+    setPanelVersion(appInfo.version);
+  } catch {
+    setPanelVersion(null);
+  }
+}
+
 function initializeHost() {
   configureHostControls();
+  loadAppInfo();
 
   if (host === "desktop") {
     emptyState.classList.remove("hidden");

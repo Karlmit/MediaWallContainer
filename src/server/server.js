@@ -3,6 +3,7 @@ const { spawn } = require("child_process");
 const fs = require("fs/promises");
 const path = require("path");
 const express = require("express");
+const { version } = require("../../package.json");
 const { VIDEO_EXTENSIONS, loadFolderData } = require("../shared/media");
 
 const app = express();
@@ -208,6 +209,10 @@ app.post("/logout", (req, res) => {
 app.use("/login.css", express.static(path.join(__dirname, "..", "renderer", "login.css")));
 app.use(requireAuth);
 app.use(express.static(path.join(__dirname, "..", "renderer")));
+
+app.get("/api/app-info", async (_req, res) => {
+  res.json({ name: "MediaWall", version });
+});
 
 app.get("/api/media", async (_req, res) => {
   res.json(await loadServerFolderData());
