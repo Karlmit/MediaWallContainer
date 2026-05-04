@@ -9,6 +9,7 @@ const debugChooseFolderButton = document.querySelector("#debugChooseFolderButton
 const pauseButton = document.querySelector("#pauseButton");
 const fullscreenButton = document.querySelector("#fullscreenButton");
 const refreshButton = document.querySelector("#refreshButton");
+const statusSplash = document.querySelector("#statusSplash");
 const subfolderList = document.querySelector("#subfolderList");
 const hostDesktopElements = document.querySelectorAll(".host-desktop");
 const hostWebElements = document.querySelectorAll(".host-web");
@@ -39,6 +40,7 @@ const state = {
   tiles: new Map(),
   swapTimer: null,
   refreshTimer: null,
+  statusSplashTimer: null,
   paused: false
 };
 
@@ -565,9 +567,24 @@ function updatePauseButton() {
   pauseButton.setAttribute("aria-label", pauseButton.title);
 }
 
+function showStatusSplash(message) {
+  clearTimeout(state.statusSplashTimer);
+  statusSplash.textContent = message;
+  statusSplash.classList.remove("visible");
+
+  requestAnimationFrame(() => {
+    statusSplash.classList.add("visible");
+  });
+
+  state.statusSplashTimer = setTimeout(() => {
+    statusSplash.classList.remove("visible");
+  }, 1150);
+}
+
 function togglePause() {
   state.paused = !state.paused;
   updatePauseButton();
+  showStatusSplash(state.paused ? "Random paused" : "Random resumed");
   saveSettings();
   restartSwapTimer();
 }
