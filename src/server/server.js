@@ -11,10 +11,18 @@ const port = Number(process.env.PORT || 3000);
 const mediaRoot = path.resolve(process.env.MEDIA_DIR || "/media");
 const transcodeCacheRoot = path.resolve(process.env.TRANSCODE_CACHE_DIR || "/cache");
 const transcodeManifestPath = path.join(transcodeCacheRoot, "manifest.json");
+const optimizedMediaRoot = process.env.OPTIMIZED_MEDIA_DIR ? path.resolve(process.env.OPTIMIZED_MEDIA_DIR) : null;
+const optimizedManifestPath = optimizedMediaRoot ? path.join(optimizedMediaRoot, "manifest.json") : null;
 const transcodeEnabled = process.env.TRANSCODE_ENABLED !== "false";
 const precacheVideos = process.env.PRECACHE_VIDEOS !== "false";
 const transcodeConcurrency = Math.max(1, Number(process.env.TRANSCODE_CONCURRENCY || 1));
 const transcodeAccel = (process.env.TRANSCODE_ACCEL || "software").toLowerCase();
+const optimizeMode = (process.env.OPTIMIZE_VIDEOS || "off").toLowerCase();
+const optimizeEnabled = Boolean(optimizedMediaRoot) && ["all", "needed"].includes(optimizeMode);
+const optimizeMaxHeight = Math.max(240, Number(process.env.OPTIMIZE_MAX_HEIGHT || 1080));
+const optimizeMinBitrate = Math.max(0, Number(process.env.OPTIMIZE_MIN_BITRATE_MBPS || 8)) * 1000000;
+const optimizeCrf = Math.max(18, Math.min(32, Number(process.env.OPTIMIZE_CRF || 24)));
+const optimizeAudioBitrate = process.env.OPTIMIZE_AUDIO_BITRATE || "128k";
 const vaapiDevice = process.env.VAAPI_DEVICE || "/dev/dri/renderD128";
 const password = process.env.MEDIA_PASSWORD || "change-me";
 const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
@@ -24,10 +32,15 @@ const activeTranscodeDetails = new Map();
 const probeCache = new Map();
 const transcodeQueue = [];
 const queuedTranscodes = new Set();
+const optimizeQueue = [];
+const queuedOptimizations = new Set();
 const recentLogEvents = [];
 let activeTranscodeCount = 0;
+let activeOptimizeCount = 0;
 let manifest = { version: 1, entries: {} };
+let optimizedManifest = { version: 1, entries: {} };
 let manifestWriteTimer = null;
+let optimizedManifestWriteTimer = null;
 
 function formatLogDetails(details) {
   return Object.entries(details)
@@ -127,9 +140,20 @@ function transcodeUrl(relativePath) {
   return `/transcode/${relativePath.split("/").map(encodeURIComponent).join("/")}`;
 }
 
+function optimizedUrl(relativePath) {
+  return `/optimized/${relativePath.split("/").map(encodeURIComponent).join("/")}`;
+}
+
 function safeMediaPath(relativePath) {
   const resolved = path.resolve(mediaRoot, relativePath);
   if (resolved !== mediaRoot && !resolved.startsWith(`${mediaRoot}${path.sep}`)) return null;
+  return resolved;
+}
+
+function safeOptimizedPath(cacheFile) {
+  if (!optimizedMediaRoot || !cacheFile) return null;
+  const resolved = path.resolve(optimizedMediaRoot, cacheFile);
+  if (resolved !== optimizedMediaRoot && !resolved.startsWith(`${optimizedMediaRoot}${path.sep}`)) return null;
   return resolved;
 }
 
@@ -173,6 +197,17 @@ async function loadManifest() {
   } catch {
     manifest = { version: 1, entries: {} };
   }
+
+  if (!optimizedManifestPath) return;
+
+  try {
+    optimizedManifest = JSON.parse(await fs.readFile(optimizedManifestPath, "utf8"));
+    if (!optimizedManifest || typeof optimizedManifest !== "object" || !optimizedManifest.entries) {
+      optimizedManifest = { version: 1, entries: {} };
+    }
+  } catch {
+    optimizedManifest = { version: 1, entries: {} };
+  }
 }
 
 async function writeManifestNow() {
@@ -187,6 +222,24 @@ function scheduleManifestWrite() {
   manifestWriteTimer = setTimeout(() => {
     writeManifestNow().catch((error) => {
       logError("manifest_write_failed", { error: error.message });
+    });
+  }, 350);
+}
+
+async function writeOptimizedManifestNow() {
+  if (!optimizedManifestPath || !optimizedMediaRoot) return;
+  clearTimeout(optimizedManifestWriteTimer);
+  optimizedManifestWriteTimer = null;
+  await fs.mkdir(optimizedMediaRoot, { recursive: true });
+  await fs.writeFile(optimizedManifestPath, `${JSON.stringify(optimizedManifest, null, 2)}\n`);
+}
+
+function scheduleOptimizedManifestWrite() {
+  if (!optimizedManifestPath) return;
+  clearTimeout(optimizedManifestWriteTimer);
+  optimizedManifestWriteTimer = setTimeout(() => {
+    writeOptimizedManifestNow().catch((error) => {
+      logError("optimized_manifest_write_failed", { error: error.message });
     });
   }, 350);
 }
@@ -219,6 +272,39 @@ async function transcodeCacheInfo(relativePath, fullPath) {
   };
 }
 
+async function optimizedCacheInfo(relativePath, fullPath) {
+  if (!optimizedMediaRoot) return null;
+
+  const stats = await fs.stat(fullPath);
+  const sourceKey = normalizedSourceKey(relativePath);
+  const signature = sourceSignature(relativePath, stats);
+  let entry = optimizedManifest.entries[sourceKey];
+
+  if (!entry || entry.sourceSignature !== signature || entry.maxHeight !== optimizeMaxHeight || entry.crf !== optimizeCrf) {
+    if (entry?.cacheFile) {
+      const existingPath = safeOptimizedPath(entry.cacheFile);
+      if (existingPath) await fs.rm(existingPath, { force: true });
+    }
+    entry = {
+      sourcePath: relativePath,
+      sourceSignature: signature,
+      cacheFile: stableCacheName(relativePath, stats),
+      status: "pending",
+      maxHeight: optimizeMaxHeight,
+      crf: optimizeCrf,
+      updatedAt: new Date().toISOString()
+    };
+    optimizedManifest.entries[sourceKey] = entry;
+    scheduleOptimizedManifestWrite();
+  }
+
+  return {
+    sourceKey,
+    entry,
+    cachePath: path.join(optimizedMediaRoot, entry.cacheFile)
+  };
+}
+
 function runProcess(command, args) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -241,41 +327,50 @@ function runProcess(command, args) {
   });
 }
 
-function softwareTranscodeArgs(inputPath, outputPath) {
-  return [
+function videoFilterForMaxHeight() {
+  return `scale=-2:min(${optimizeMaxHeight}\\,ih)`;
+}
+
+function softwareTranscodeArgs(inputPath, outputPath, options = {}) {
+  const args = [
     "-y",
     "-i", inputPath,
     "-map", "0:v:0",
-    "-map", "0:a:0?",
+    "-map", "0:a:0?"
+  ];
+  if (options.downscale) args.push("-vf", videoFilterForMaxHeight());
+  args.push(
     "-c:v", "libx264",
-    "-preset", "veryfast",
-    "-crf", "23",
+    "-preset", options.preset || "veryfast",
+    "-crf", String(options.crf || 23),
     "-pix_fmt", "yuv420p",
     "-c:a", "aac",
-    "-b:a", "160k",
+    "-b:a", options.audioBitrate || "160k",
     "-movflags", "+faststart",
     outputPath
-  ];
+  );
+  return args;
 }
 
-function vaapiTranscodeArgs(inputPath, outputPath) {
+function vaapiTranscodeArgs(inputPath, outputPath, options = {}) {
+  const filter = options.downscale ? `${videoFilterForMaxHeight()},format=nv12,hwupload` : "format=nv12,hwupload";
   return [
     "-y",
     "-vaapi_device", vaapiDevice,
     "-i", inputPath,
     "-map", "0:v:0",
     "-map", "0:a:0?",
-    "-vf", "format=nv12,hwupload",
+    "-vf", filter,
     "-c:v", "h264_vaapi",
-    "-qp", "23",
+    "-qp", String(options.qp || 23),
     "-c:a", "aac",
-    "-b:a", "160k",
+    "-b:a", options.audioBitrate || "160k",
     "-movflags", "+faststart",
     outputPath
   ];
 }
 
-function qsvTranscodeArgs(inputPath, outputPath) {
+function qsvTranscodeArgs(inputPath, outputPath, options = {}) {
   return [
     "-y",
     "-init_hw_device", `qsv=hw:${vaapiDevice}`,
@@ -283,11 +378,11 @@ function qsvTranscodeArgs(inputPath, outputPath) {
     "-i", inputPath,
     "-map", "0:v:0",
     "-map", "0:a:0?",
-    "-vf", "format=nv12,hwupload=extra_hw_frames=64",
+    "-vf", options.downscale ? `${videoFilterForMaxHeight()},format=nv12,hwupload=extra_hw_frames=64` : "format=nv12,hwupload=extra_hw_frames=64",
     "-c:v", "h264_qsv",
-    "-global_quality", "23",
+    "-global_quality", String(options.globalQuality || 23),
     "-c:a", "aac",
-    "-b:a", "160k",
+    "-b:a", options.audioBitrate || "160k",
     "-movflags", "+faststart",
     outputPath
   ];
@@ -344,14 +439,14 @@ function runFfmpegWithProgress(args, onProgress) {
   });
 }
 
-async function transcodeWithFallback(fullPath, tempPath, onProgress) {
+async function transcodeWithFallback(fullPath, tempPath, onProgress, options = {}) {
   const accelModes = [];
   if (transcodeAccel === "vaapi" || transcodeAccel === "auto") accelModes.push("vaapi");
   if (transcodeAccel === "qsv") accelModes.push("qsv");
 
   for (const mode of accelModes) {
     try {
-      const args = mode === "qsv" ? qsvTranscodeArgs(fullPath, tempPath) : vaapiTranscodeArgs(fullPath, tempPath);
+      const args = mode === "qsv" ? qsvTranscodeArgs(fullPath, tempPath, options) : vaapiTranscodeArgs(fullPath, tempPath, options);
       await runFfmpegWithProgress(args, onProgress);
       return mode;
     } catch (error) {
@@ -364,7 +459,7 @@ async function transcodeWithFallback(fullPath, tempPath, onProgress) {
     }
   }
 
-  await runFfmpegWithProgress(softwareTranscodeArgs(fullPath, tempPath), onProgress);
+  await runFfmpegWithProgress(softwareTranscodeArgs(fullPath, tempPath, options), onProgress);
   return "software";
 }
 
@@ -389,7 +484,10 @@ async function probeVideo(relativePath, fullPath) {
     const videoCodec = (video?.codec_name || "").toLowerCase();
     const audioCodec = (audio?.codec_name || "").toLowerCase();
     const pixelFormat = (video?.pix_fmt || "").toLowerCase();
+    const width = Number(video?.width || 0) || null;
+    const height = Number(video?.height || 0) || null;
     const durationSeconds = Number(video?.duration || data.format?.duration || 0) || null;
+    const bitrate = Number(data.format?.bit_rate || video?.bit_rate || 0) || (durationSeconds ? Math.round(stats.size * 8 / durationSeconds) : null);
     const isBrowserMp4 = container.includes("mov") || container.includes("mp4") || container.includes("m4a") || container.includes("3gp") || container.includes("3g2") || container.includes("mj2");
     const isBrowserWebm = container.includes("webm");
     const supportedMp4Video = ["h264", "av1"].includes(videoCodec);
@@ -400,7 +498,7 @@ async function probeVideo(relativePath, fullPath) {
     const supportedAudio = (isBrowserMp4 && supportedMp4Audio) || (isBrowserWebm && supportedWebmAudio);
     const supportedPixelFormat = !pixelFormat || pixelFormat === "yuv420p";
     const browserPlayable = (isBrowserMp4 || isBrowserWebm) && supportedVideo && supportedAudio && supportedPixelFormat;
-    const probe = { browserPlayable, videoCodec, audioCodec, pixelFormat, container, durationSeconds };
+    const probe = { browserPlayable, videoCodec, audioCodec, pixelFormat, container, durationSeconds, width, height, bitrate, size: stats.size };
     probeCache.set(relativePath, { signature, probe });
     return probe;
   } catch (error) {
@@ -429,6 +527,7 @@ async function transcodeToMp4(relativePath, fullPath) {
     entry.updatedAt = new Date().toISOString();
     scheduleManifestWrite();
     const activeDetails = {
+      kind: "compatibility",
       source: relativePath,
       cacheFile: entry.cacheFile,
       requestedMode: transcodeAccel,
@@ -448,16 +547,22 @@ async function transcodeToMp4(relativePath, fullPath) {
       queueWaiting: transcodeQueue.length
     });
 
-    const transcodeMode = await transcodeWithFallback(fullPath, tempPath, (progress) => {
-      if (progress.currentSeconds !== undefined) {
-        activeDetails.currentSeconds = Math.max(activeDetails.currentSeconds || 0, progress.currentSeconds);
-        if (activeDetails.durationSeconds) {
-          activeDetails.percent = Math.min(99, Math.round((activeDetails.currentSeconds / activeDetails.durationSeconds) * 100));
+    let transcodeMode;
+    try {
+      transcodeMode = await transcodeWithFallback(fullPath, tempPath, (progress) => {
+        if (progress.currentSeconds !== undefined) {
+          activeDetails.currentSeconds = Math.max(activeDetails.currentSeconds || 0, progress.currentSeconds);
+          if (activeDetails.durationSeconds) {
+            activeDetails.percent = Math.min(99, Math.round((activeDetails.currentSeconds / activeDetails.durationSeconds) * 100));
+          }
         }
-      }
-      if (progress.speed !== undefined) activeDetails.speed = progress.speed;
-      activeDetails.updatedAt = new Date().toISOString();
-    });
+        if (progress.speed !== undefined) activeDetails.speed = progress.speed;
+        activeDetails.updatedAt = new Date().toISOString();
+      });
+    } catch (error) {
+      await fs.rm(tempPath, { force: true });
+      throw error;
+    }
 
     await fs.rename(tempPath, cachePath);
     const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
@@ -498,8 +603,130 @@ async function transcodeToMp4(relativePath, fullPath) {
   }
 }
 
+function shouldOptimizeVideo(probe) {
+  if (!optimizeEnabled) return false;
+  if (optimizeMode === "all") return true;
+  if (!probe.browserPlayable) return true;
+  if (probe.height && probe.height > optimizeMaxHeight) return true;
+  if (probe.bitrate && optimizeMinBitrate && probe.bitrate > optimizeMinBitrate) return true;
+  return false;
+}
+
+async function optimizeToMp4(relativePath, fullPath, probe) {
+  if (!optimizeEnabled) throw new Error("Video optimization is disabled");
+
+  const info = await optimizedCacheInfo(relativePath, fullPath);
+  if (!info) throw new Error("Optimized media directory is not configured");
+  const { sourceKey, entry, cachePath } = info;
+  if (entry.status === "ready" && await pathExists(cachePath)) return cachePath;
+
+  const existing = activeTranscodes.get(cachePath);
+  if (existing) return existing;
+
+  const optimization = (async () => {
+    const startedAt = Date.now();
+    const currentProbe = probe || await probeVideo(relativePath, fullPath);
+    await fs.mkdir(optimizedMediaRoot, { recursive: true });
+    const tempPath = `${cachePath}.${process.pid}.${Date.now()}.tmp.mp4`;
+    entry.status = "transcoding";
+    entry.error = null;
+    entry.updatedAt = new Date().toISOString();
+    scheduleOptimizedManifestWrite();
+
+    const activeDetails = {
+      kind: "optimized",
+      source: relativePath,
+      cacheFile: entry.cacheFile,
+      requestedMode: transcodeAccel,
+      status: "transcoding",
+      startedAt: new Date(startedAt).toISOString(),
+      durationSeconds: currentProbe.durationSeconds,
+      currentSeconds: 0,
+      speed: null,
+      percent: null
+    };
+    activeTranscodeDetails.set(cachePath, activeDetails);
+    logInfo("optimize_start", {
+      source: relativePath,
+      requestedMode: transcodeAccel,
+      cacheFile: entry.cacheFile,
+      sourceHeight: currentProbe.height,
+      sourceBitrate: currentProbe.bitrate,
+      maxHeight: optimizeMaxHeight,
+      queueActive: activeOptimizeCount,
+      queueWaiting: optimizeQueue.length
+    });
+
+    const options = {
+      downscale: Boolean(currentProbe.height && currentProbe.height > optimizeMaxHeight),
+      crf: optimizeCrf,
+      qp: optimizeCrf,
+      globalQuality: optimizeCrf,
+      audioBitrate: optimizeAudioBitrate
+    };
+    let transcodeMode;
+    try {
+      transcodeMode = await transcodeWithFallback(fullPath, tempPath, (progress) => {
+        if (progress.currentSeconds !== undefined) {
+          activeDetails.currentSeconds = Math.max(activeDetails.currentSeconds || 0, progress.currentSeconds);
+          if (activeDetails.durationSeconds) {
+            activeDetails.percent = Math.min(99, Math.round((activeDetails.currentSeconds / activeDetails.durationSeconds) * 100));
+          }
+        }
+        if (progress.speed !== undefined) activeDetails.speed = progress.speed;
+        activeDetails.updatedAt = new Date().toISOString();
+      }, options);
+    } catch (error) {
+      await fs.rm(tempPath, { force: true });
+      throw error;
+    }
+
+    await fs.rename(tempPath, cachePath);
+    const optimizedStats = await fs.stat(cachePath);
+    const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+    entry.status = "ready";
+    entry.cacheFile = path.basename(cachePath);
+    entry.transcodeMode = transcodeMode;
+    entry.originalSize = currentProbe.size;
+    entry.optimizedSize = optimizedStats.size;
+    entry.updatedAt = new Date().toISOString();
+    scheduleOptimizedManifestWrite();
+    logInfo("optimize_success", {
+      source: relativePath,
+      mode: transcodeMode,
+      cacheFile: entry.cacheFile,
+      originalSize: currentProbe.size,
+      optimizedSize: optimizedStats.size,
+      durationSeconds
+    });
+    return cachePath;
+  })();
+
+  activeTranscodes.set(cachePath, optimization);
+  try {
+    return await optimization;
+  } catch (error) {
+    const failedEntry = optimizedManifest.entries[sourceKey];
+    if (failedEntry) {
+      failedEntry.status = "failed";
+      failedEntry.error = error.message;
+      failedEntry.updatedAt = new Date().toISOString();
+      scheduleOptimizedManifestWrite();
+    }
+    logError("optimize_failed", {
+      source: relativePath,
+      requestedMode: transcodeAccel,
+      error: error.message
+    });
+    throw error;
+  } finally {
+    activeTranscodes.delete(cachePath);
+    activeTranscodeDetails.delete(cachePath);
+  }
+}
+
 function processTranscodeQueue() {
-  while (activeTranscodeCount < transcodeConcurrency && transcodeQueue.length) {
+  while (activeTranscodeCount + activeOptimizeCount < transcodeConcurrency && transcodeQueue.length) {
     const job = transcodeQueue.shift();
     queuedTranscodes.delete(job.relativePath);
     activeTranscodeCount += 1;
@@ -508,6 +735,22 @@ function processTranscodeQueue() {
       .finally(() => {
         activeTranscodeCount -= 1;
         processTranscodeQueue();
+        processOptimizeQueue();
+      });
+  }
+}
+
+function processOptimizeQueue() {
+  while (activeTranscodeCount + activeOptimizeCount < transcodeConcurrency && optimizeQueue.length) {
+    const job = optimizeQueue.shift();
+    queuedOptimizations.delete(job.relativePath);
+    activeOptimizeCount += 1;
+    optimizeToMp4(job.relativePath, job.fullPath, job.probe)
+      .catch((error) => logError("background_optimize_failed", { source: job.relativePath, error: error.message }))
+      .finally(() => {
+        activeOptimizeCount -= 1;
+        processTranscodeQueue();
+        processOptimizeQueue();
       });
   }
 }
@@ -524,11 +767,29 @@ function queueTranscode(relativePath, fullPath) {
   processTranscodeQueue();
 }
 
+function queueOptimize(relativePath, fullPath, probe) {
+  if (!optimizeEnabled || queuedOptimizations.has(relativePath)) return;
+  queuedOptimizations.add(relativePath);
+  optimizeQueue.push({ relativePath, fullPath, probe });
+  logInfo("optimize_queued", {
+    source: relativePath,
+    queueWaiting: optimizeQueue.length,
+    queueActive: activeOptimizeCount,
+    mode: optimizeMode,
+    maxHeight: optimizeMaxHeight
+  });
+  processOptimizeQueue();
+}
+
 function diagnosticsSnapshot() {
   const entries = Object.values(manifest.entries);
   const ready = entries.filter((entry) => entry.status === "ready");
   const failed = entries.filter((entry) => entry.status === "failed");
   const pending = entries.filter((entry) => entry.status === "pending");
+  const optimizedEntries = Object.values(optimizedManifest.entries);
+  const optimizedReady = optimizedEntries.filter((entry) => entry.status === "ready");
+  const optimizedFailed = optimizedEntries.filter((entry) => entry.status === "failed");
+  const optimizedPending = optimizedEntries.filter((entry) => entry.status === "pending");
 
   return {
     app: {
@@ -544,14 +805,19 @@ function diagnosticsSnapshot() {
       libvaDriver: process.env.LIBVA_DRIVER_NAME || "",
       activeCount: activeTranscodeDetails.size,
       workerSlotsActive: activeTranscodeCount,
-      queueWaiting: transcodeQueue.length,
+      queueWaiting: transcodeQueue.length + optimizeQueue.length,
       cachedCount: ready.length,
       failedCount: failed.length,
       pendingCount: pending.length,
       queued: transcodeQueue.map((job, index) => ({
+        kind: "compatibility",
         source: job.relativePath,
         position: index + 1
-      })),
+      })).concat(optimizeQueue.map((job, index) => ({
+        kind: "optimized",
+        source: job.relativePath,
+        position: transcodeQueue.length + index + 1
+      }))),
       active: [...activeTranscodeDetails.values()].map((job) => ({
         ...job,
         elapsedSeconds: Math.round((Date.now() - Date.parse(job.startedAt)) / 1000)
@@ -567,7 +833,33 @@ function diagnosticsSnapshot() {
           error: entry.error,
           updatedAt: entry.updatedAt,
           cacheFile: entry.cacheFile
-        }))
+        })).concat(optimizedEntries
+        .filter((entry) => entry.status === "ready" || entry.status === "failed")
+        .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
+        .slice(0, 20)
+        .map((entry) => ({
+          kind: "optimized",
+          source: entry.sourcePath,
+          status: entry.status,
+          mode: entry.transcodeMode,
+          error: entry.error,
+          updatedAt: entry.updatedAt,
+          cacheFile: entry.cacheFile,
+          originalSize: entry.originalSize,
+          optimizedSize: entry.optimizedSize
+        })))
+    },
+    optimize: {
+      enabled: optimizeEnabled,
+      mode: optimizeMode,
+      directory: optimizedMediaRoot,
+      maxHeight: optimizeMaxHeight,
+      minBitrate: optimizeMinBitrate,
+      cachedCount: optimizedReady.length,
+      failedCount: optimizedFailed.length,
+      pendingCount: optimizedPending.length,
+      queueWaiting: optimizeQueue.length,
+      activeCount: activeOptimizeCount
     },
     logs: recentLogEvents.slice(-80)
   };
@@ -580,6 +872,7 @@ function createServerItem({ relativePath, name, type, isVideo }) {
     type,
     path: relativePath,
     url: mediaUrl(relativePath),
+    optimizedUrl: null,
     fallbackUrl: isVideo && transcodeEnabled ? transcodeUrl(relativePath) : null
   };
 }
@@ -606,8 +899,30 @@ async function enrichServerMedia(folderData) {
     item.videoCodec = probe.videoCodec;
     item.audioCodec = probe.audioCodec;
     item.needsTranscode = transcodeEnabled && !probe.browserPlayable;
+    item.needsOptimize = shouldOptimizeVideo(probe);
+    item.sourceHeight = probe.height;
+    item.sourceBitrate = probe.bitrate;
 
-    if (item.needsTranscode && precacheVideos) {
+    if (optimizeEnabled) {
+      const optimizeInfo = await optimizedCacheInfo(item.path, fullPath);
+      if (optimizeInfo?.entry.status === "ready" && await pathExists(optimizeInfo.cachePath)) {
+        item.optimizedUrl = optimizedUrl(item.path);
+        item.usingOptimized = true;
+        item.needsTranscode = false;
+      } else if (item.needsOptimize && precacheVideos) {
+        logInfo("video_needs_optimize", {
+          source: item.path,
+          height: probe.height,
+          bitrate: probe.bitrate,
+          browserPlayable: probe.browserPlayable,
+          mode: optimizeMode,
+          maxHeight: optimizeMaxHeight
+        });
+        queueOptimize(item.path, fullPath, probe);
+      }
+    }
+
+    if (item.needsTranscode && precacheVideos && !item.needsOptimize) {
       logInfo("video_needs_transcode", {
         source: item.path,
         videoCodec: item.videoCodec,
@@ -619,6 +934,9 @@ async function enrichServerMedia(folderData) {
   }));
   cleanupTranscodeCache(folderData.media).catch((error) => {
     logError("cache_cleanup_failed", { error: error.message });
+  });
+  cleanupOptimizedCache(folderData.media).catch((error) => {
+    logError("optimized_cache_cleanup_failed", { error: error.message });
   });
   return folderData;
 }
@@ -644,6 +962,31 @@ async function cleanupTranscodeCache(media) {
   }
 
   if (changed) scheduleManifestWrite();
+}
+
+async function cleanupOptimizedCache(media) {
+  if (!optimizedMediaRoot) return;
+  const validSourceKeys = new Set(media.filter((item) => item.type === "video").map((item) => normalizedSourceKey(item.path)));
+  let changed = false;
+
+  for (const [sourceKey, entry] of Object.entries(optimizedManifest.entries)) {
+    if (validSourceKeys.has(sourceKey)) {
+      continue;
+    }
+
+    if (entry.cacheFile) {
+      const cachePath = safeOptimizedPath(entry.cacheFile);
+      if (cachePath) await fs.rm(cachePath, { force: true });
+      logInfo("optimized_cache_removed_missing_source", {
+        source: entry.sourcePath,
+        cacheFile: entry.cacheFile
+      });
+    }
+    delete optimizedManifest.entries[sourceKey];
+    changed = true;
+  }
+
+  if (changed) scheduleOptimizedManifestWrite();
 }
 
 app.get("/login", (req, res) => {
@@ -700,6 +1043,23 @@ app.get("/transcode/*path", async (req, res) => {
   }
 });
 
+app.get("/optimized/*path", async (req, res) => {
+  const relativePath = req.params.path.join("/");
+  if (!isVideoPath(relativePath) || !optimizeEnabled) return res.sendStatus(404);
+
+  const fullPath = safeMediaPath(relativePath);
+  if (!fullPath) return res.sendStatus(404);
+
+  try {
+    const cachePath = await optimizeToMp4(relativePath, fullPath);
+    res.type("mp4");
+    return res.sendFile(cachePath);
+  } catch (error) {
+    logError("request_optimize_failed", { source: relativePath, error: error.message });
+    return res.sendStatus(500);
+  }
+});
+
 app.get("/media/*path", async (req, res) => {
   const relativePath = req.params.path.join("/");
   const fullPath = safeMediaPath(relativePath);
@@ -716,10 +1076,15 @@ async function start() {
       port,
       mediaRoot,
       transcodeCacheRoot,
+      optimizedMediaRoot,
       transcodeEnabled,
       precacheVideos,
       transcodeConcurrency,
       transcodeAccel,
+      optimizeEnabled,
+      optimizeMode,
+      optimizeMaxHeight,
+      optimizeMinBitrate,
       vaapiDevice,
       vaapiDeviceVisible,
       libvaDriver: process.env.LIBVA_DRIVER_NAME || ""

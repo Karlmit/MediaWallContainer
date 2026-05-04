@@ -13,13 +13,20 @@ services:
       TRANSCODE_ACCEL: "software"
       VAAPI_DEVICE: "/dev/dri/renderD128"
       LIBVA_DRIVER_NAME: "iHD"
+      # Optional: create smaller browser-friendly MP4 copies in a separate volume.
+      # OPTIMIZED_MEDIA_DIR: "/optimized"
+      # OPTIMIZE_VIDEOS: "needed"
+      # OPTIMIZE_MAX_HEIGHT: "1080"
+      # OPTIMIZE_MIN_BITRATE_MBPS: "8"
     # Uncomment on Unraid/Linux with Intel iGPU passthrough.
     # devices:
     #   - "/dev/dri:/dev/dri"
     volumes:
       - "C:/Path/To/Your/Media:/media:ro"
       - "media-wall-cache:/cache"
+      # - "media-wall-optimized:/optimized"
     restart: unless-stopped
 
 volumes:
   media-wall-cache:
+  # media-wall-optimized:

@@ -232,8 +232,9 @@ function createTile(item) {
   const markReady = () => tile.classList.remove("loading");
 
   const media = document.createElement(item.type === "video" ? "video" : "img");
-  media.src = item.needsTranscode && item.fallbackUrl ? item.fallbackUrl : item.url;
-  if (item.needsTranscode && item.fallbackUrl) media.dataset.usingFallback = "true";
+  media.src = item.optimizedUrl || (item.needsTranscode && item.fallbackUrl ? item.fallbackUrl : item.url);
+  if (item.optimizedUrl) media.dataset.usingOptimized = "true";
+  if (!item.optimizedUrl && item.needsTranscode && item.fallbackUrl) media.dataset.usingFallback = "true";
   media.draggable = false;
 
   if (item.type === "video") {
@@ -806,16 +807,18 @@ function renderEmptyDiagnostics(container, text) {
 
 function renderDiagnosticsSummary(data) {
   const transcode = data.transcode || {};
+  const optimize = data.optimize || {};
   diagnosticsMeta.textContent = data.app?.version ? `MediaWall - v${data.app.version}` : "MediaWall";
   diagnosticsSummary.textContent = "";
 
   const items = [
     ["Active", transcode.activeCount || 0],
     ["Queued", transcode.queueWaiting || 0],
-    ["Cached", transcode.cachedCount || 0],
-    ["Failed", transcode.failedCount || 0],
+    ["Compat cached", transcode.cachedCount || 0],
+    ["Optimized", optimize.cachedCount || 0],
+    ["Failed", (transcode.failedCount || 0) + (optimize.failedCount || 0)],
     ["Mode", transcode.accel || "unknown"],
-    ["Device", transcode.vaapiDevice || "none"]
+    ["Optimize", optimize.enabled ? `${optimize.mode} ${optimize.maxHeight}p` : "off"]
   ];
 
   for (const [label, value] of items) {
@@ -851,7 +854,7 @@ function renderActiveTranscodes(active = []) {
     const duration = formatSeconds(job.durationSeconds);
     const percent = job.percent !== null && job.percent !== undefined ? `${job.percent}%` : "working";
     const speed = job.speed ? ` ${job.speed}` : "";
-    detail.textContent = `${job.requestedMode || "auto"} ${percent}${speed}${current ? ` ${current}${duration ? ` / ${duration}` : ""}` : ""}`;
+    detail.textContent = `${job.kind || "transcode"} ${job.requestedMode || "auto"} ${percent}${speed}${current ? ` ${current}${duration ? ` / ${duration}` : ""}` : ""}`;
 
     const progress = document.createElement("div");
     progress.className = "diagnostics-progress";
@@ -874,7 +877,7 @@ function renderQueuedTranscodes(queued = []) {
   for (const job of queued.slice(0, 30)) {
     const row = document.createElement("article");
     row.className = "diagnostics-row compact";
-    row.textContent = `${job.position}. ${job.source}`;
+    row.textContent = `${job.position}. ${job.kind || "transcode"} ${job.source}`;
     queuedTranscodeList.append(row);
   }
 }
@@ -894,7 +897,8 @@ function renderRecentTranscodes(recent = []) {
     title.textContent = job.source || "Unknown source";
     const detail = document.createElement("div");
     detail.className = "diagnostics-row-detail";
-    detail.textContent = job.status === "failed" ? `failed ${job.error || ""}` : `ready ${job.mode || ""}`;
+    const sizeText = job.originalSize && job.optimizedSize ? ` ${Math.round(job.originalSize / 1048576)}MB -> ${Math.round(job.optimizedSize / 1048576)}MB` : "";
+    detail.textContent = job.status === "failed" ? `${job.kind || "transcode"} failed ${job.error || ""}` : `${job.kind || "transcode"} ready ${job.mode || ""}${sizeText}`;
     row.append(title, detail);
     recentTranscodeList.append(row);
   }
