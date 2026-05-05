@@ -28,7 +28,8 @@ const controls = {
   averageSize: document.querySelector("#averageSize"),
   swapSeconds: document.querySelector("#swapSeconds"),
   fadeSeconds: document.querySelector("#fadeSeconds"),
-  cropMedia: document.querySelector("#cropMedia")
+  cropMedia: document.querySelector("#cropMedia"),
+  videoDebug: document.querySelector("#videoDebug")
 };
 
 const STORAGE_KEY = "mediaWall.settings.v2";
@@ -72,6 +73,7 @@ function saveSettings() {
     swapSeconds: controls.swapSeconds.value,
     fadeSeconds: controls.fadeSeconds.value,
     cropMedia: controls.cropMedia.checked,
+    videoDebug: controls.videoDebug.checked,
     paused: state.paused,
     excludedSubfolders: [...state.excludedSubfolders]
   };
@@ -85,6 +87,7 @@ function applySavedSettings() {
   if (saved.swapSeconds) controls.swapSeconds.value = saved.swapSeconds;
   if (saved.fadeSeconds) controls.fadeSeconds.value = saved.fadeSeconds;
   if (typeof saved.cropMedia === "boolean") controls.cropMedia.checked = saved.cropMedia;
+  if (typeof saved.videoDebug === "boolean") controls.videoDebug.checked = saved.videoDebug;
   if (typeof saved.paused === "boolean") state.paused = saved.paused;
   if (Array.isArray(saved.excludedSubfolders)) {
     state.excludedSubfolders = new Set(saved.excludedSubfolders);
@@ -224,6 +227,71 @@ function measureMedia(item, element) {
   }
 }
 
+function mediaSourceLabel(item, media) {
+  if (media.dataset.usingOptimized === "true") return "optimized";
+  if (media.dataset.usingFallback === "true") return "transcoded";
+  if (item.needsTranscode && item.fallbackUrl) return "transcode pending";
+  return "original";
+}
+
+function readyStateLabel(video) {
+  return ["empty", "metadata", "current", "future", "enough"][video.readyState] || String(video.readyState);
+}
+
+function networkStateLabel(video) {
+  return ["empty", "idle", "loading", "no-source"][video.networkState] || String(video.networkState);
+}
+
+function bufferedVideoText(video) {
+  if (!video.buffered.length) return "buffered 0s";
+
+  const ranges = [];
+  let total = 0;
+  for (let index = 0; index < video.buffered.length; index += 1) {
+    const start = video.buffered.start(index);
+    const end = video.buffered.end(index);
+    total += Math.max(0, end - start);
+    ranges.push(`${start.toFixed(1)}-${end.toFixed(1)}s`);
+  }
+
+  const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null;
+  const percent = duration ? ` ${(Math.min(100, (total / duration) * 100)).toFixed(0)}%` : "";
+  return `buffered ${total.toFixed(1)}s${percent} (${ranges.slice(0, 2).join(", ")})`;
+}
+
+function updateVideoDebug(tile, item, video) {
+  const overlay = tile.querySelector(".video-debug");
+  if (!overlay) return;
+
+  const visible = controls.videoDebug.checked && item.type === "video";
+  overlay.classList.toggle("hidden", !visible);
+  tile.classList.toggle("debug-visible", visible);
+  if (!visible) return;
+
+  const source = mediaSourceLabel(item, video);
+  const waiting = tile.classList.contains("loading") ? "loading spinner on" : "playing/ready";
+  const current = Number.isFinite(video.currentTime) ? `${video.currentTime.toFixed(1)}s` : "0s";
+  const duration = Number.isFinite(video.duration) ? `${video.duration.toFixed(1)}s` : "unknown";
+  const paused = video.paused ? "paused" : "playing";
+  const stalled = Number(video.dataset.stuckTicks || 0) > 0 ? ` stuckTicks=${video.dataset.stuckTicks}` : "";
+
+  overlay.textContent = [
+    `${waiting} | ${source}`,
+    `ready=${readyStateLabel(video)} network=${networkStateLabel(video)} ${paused}${stalled}`,
+    `${bufferedVideoText(video)}`,
+    `time ${current} / ${duration}`,
+    item.path
+  ].join("\n");
+}
+
+function refreshVideoDebug() {
+  for (const [itemId, tile] of state.tiles.entries()) {
+    const item = state.active.find((activeItem) => activeItem.id === itemId);
+    const video = tile.querySelector("video");
+    if (item && video) updateVideoDebug(tile, item, video);
+  }
+}
+
 function createTile(item) {
   const tile = document.createElement("article");
   tile.className = `tile loading ${settings().cropMedia ? "" : "contain"}`;
@@ -239,6 +307,8 @@ function createTile(item) {
   media.draggable = false;
 
   if (item.type === "video") {
+    const debug = document.createElement("div");
+    debug.className = "video-debug hidden";
     media.autoplay = true;
     media.loop = true;
     media.muted = true;
@@ -249,6 +319,7 @@ function createTile(item) {
       if (!item.fallbackUrl || media.dataset.usingFallback === "true") {
         tile.classList.remove("loading");
         tile.classList.add("failed");
+        updateVideoDebug(tile, item, media);
         return;
       }
       tile.classList.add("loading");
@@ -256,26 +327,44 @@ function createTile(item) {
       media.src = item.fallbackUrl;
       media.load();
       media.play().catch(() => {});
+      updateVideoDebug(tile, item, media);
     });
-    media.addEventListener("loadedmetadata", () => measureMedia(item, media), { once: true });
-    media.addEventListener("loadeddata", markReady);
+    media.addEventListener("loadedmetadata", () => {
+      measureMedia(item, media);
+      updateVideoDebug(tile, item, media);
+    }, { once: true });
+    media.addEventListener("loadeddata", () => {
+      markReady();
+      updateVideoDebug(tile, item, media);
+    });
     media.addEventListener("canplay", () => {
       markReady();
+      updateVideoDebug(tile, item, media);
       media.play().catch(() => {});
     });
     media.addEventListener("playing", () => {
       markReady();
       media.dataset.stuckTicks = "0";
+      updateVideoDebug(tile, item, media);
     });
-    media.addEventListener("waiting", () => tile.classList.add("loading"));
-    media.addEventListener("stalled", () => tile.classList.add("loading"));
+    media.addEventListener("progress", () => updateVideoDebug(tile, item, media));
+    media.addEventListener("waiting", () => {
+      tile.classList.add("loading");
+      updateVideoDebug(tile, item, media);
+    });
+    media.addEventListener("stalled", () => {
+      tile.classList.add("loading");
+      updateVideoDebug(tile, item, media);
+    });
     media.addEventListener("timeupdate", () => {
       markReady();
       media.dataset.stuckTicks = "0";
+      updateVideoDebug(tile, item, media);
       if (media.duration && media.currentTime >= media.duration - 0.25) {
         state.completedVideos.add(item.id);
       }
     });
+    tile.append(debug);
   } else {
     media.decoding = "async";
     media.addEventListener("load", () => {
@@ -322,6 +411,10 @@ function ensureVideoPlayback() {
   for (const tile of state.tiles.values()) {
     const video = tile.querySelector("video");
     if (!video || tile.classList.contains("failed")) continue;
+    const item = state.active.find((activeItem) => activeItem.id === tile.dataset.id);
+    const updateDebug = () => {
+      if (item) updateVideoDebug(tile, item, video);
+    };
 
     if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
       tile.classList.remove("loading");
@@ -329,6 +422,7 @@ function ensureVideoPlayback() {
 
     if (video.paused && !video.ended && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
       video.play().catch(() => {});
+      updateDebug();
       continue;
     }
 
@@ -339,6 +433,7 @@ function ensureVideoPlayback() {
 
     if (video.paused || video.ended || changed || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
       video.dataset.stuckTicks = "0";
+      updateDebug();
       continue;
     }
 
@@ -349,6 +444,8 @@ function ensureVideoPlayback() {
       video.playbackRate = 1;
       video.play().catch(() => {});
     }
+
+    updateDebug();
   }
 }
 
@@ -1112,6 +1209,10 @@ window.addEventListener("keydown", (event) => {
 for (const input of Object.values(controls)) {
   input.addEventListener("input", () => {
     saveSettings();
+    if (input === controls.videoDebug) {
+      refreshVideoDebug();
+      return;
+    }
     reconcileItemCount();
     restartSwapTimer();
   });

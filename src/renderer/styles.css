@@ -194,6 +194,34 @@ input {
   object-fit: contain;
 }
 
+.video-debug {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 28px);
+  z-index: 4;
+  width: min(92%, 420px);
+  max-height: min(48%, 160px);
+  overflow: hidden;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(5, 5, 7, 0.78);
+  color: #f5f1e8;
+  font-family: Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  transform: translateX(-50%);
+  pointer-events: none;
+  backdrop-filter: blur(10px);
+}
+
+.tile.debug-visible::after {
+  z-index: 3;
+}
+
 .top-bar {
   position: fixed;
   top: 14px;

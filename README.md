@@ -17,6 +17,7 @@ Both versions use the same shared wall UI, so feature updates should land in bot
 - Mouse wheel changes visible item count.
 - Space pauses/resumes random swaps.
 - Shift+D opens the Docker diagnostics view with transcode status and recent server logs.
+- Menu option for per-video loading debug shows source, browser buffer, and playback state on each tile.
 - ArrowRight refreshes the visible set.
 - ArrowUp/ArrowDown adjusts visible item count.
 - Right-click tiles to select them, then middle-click to show only selected tiles.
