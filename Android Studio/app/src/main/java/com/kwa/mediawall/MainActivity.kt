@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.res.Configuration
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -49,6 +50,7 @@ class MainActivity : Activity() {
     private lateinit var wall: FrameLayout
     private lateinit var splash: TextView
     private lateinit var menuButton: Button
+    private lateinit var selectedOnlyButton: Button
     private var overlayView: View? = null
 
     private var serverUrl = ""
@@ -65,6 +67,15 @@ class MainActivity : Activity() {
     private var touchLastY = 0f
     private var touchStartTime = 0L
     private var touchChangedItemCount = false
+    private val selectedItemIds = mutableSetOf<String>()
+    private var longPressItemId: String? = null
+    private var longPressTriggered = false
+    private val longPressRunnable = Runnable {
+        longPressItemId?.let {
+            longPressTriggered = true
+            toggleSelectedItem(it)
+        }
+    }
     private var menuVisible = false
     private var offlineMode = false
     private var randomPaused = false
@@ -143,7 +154,16 @@ class MainActivity : Activity() {
             alpha = 0.88f
             setOnClickListener { showMainMenu() }
         }
+        selectedOnlyButton = Button(this).apply {
+            text = "Show selected"
+            alpha = 0.9f
+            visibility = View.GONE
+            setOnClickListener { showSelectedItemsOnly() }
+        }
         root.addView(wall, FrameLayout.LayoutParams(-1, -1))
+        root.addView(selectedOnlyButton, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START).apply {
+            setMargins(16, 16, 0, 0)
+        })
         root.addView(menuButton, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
             setMargins(0, 16, 16, 0)
         })
@@ -186,11 +206,32 @@ class MainActivity : Activity() {
     }
 
     private fun handleTileTouch(event: MotionEvent, itemId: String): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                longPressItemId = itemId
+                longPressTriggered = false
+                mainHandler.removeCallbacks(longPressRunnable)
+                mainHandler.postDelayed(longPressRunnable, 500)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val dy = kotlin.math.abs(event.y - touchStartY)
+                if (dy > 35) mainHandler.removeCallbacks(longPressRunnable)
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                mainHandler.removeCallbacks(longPressRunnable)
+            }
+        }
         val handled = handleWallTouch(event)
         if (event.actionMasked == MotionEvent.ACTION_UP) {
             val dy = kotlin.math.abs(event.y - touchStartY)
             val quickEnough = System.currentTimeMillis() - touchStartTime < 900
-            if (!touchChangedItemCount && quickEnough && dy < 35) replaceItem(itemId)
+            if (!longPressTriggered && !touchChangedItemCount && quickEnough && dy < 35) replaceItem(itemId)
+            longPressItemId = null
+            longPressTriggered = false
+        }
+        if (event.actionMasked == MotionEvent.ACTION_CANCEL) {
+            longPressItemId = null
+            longPressTriggered = false
         }
         return handled
     }
@@ -247,15 +288,6 @@ class MainActivity : Activity() {
                 menuVisible = false
                 connectAndLoad()
             })
-            addView(button("Download status") { showDownloadStatusScreen() })
-            addView(button("Open offline") {
-                clearOverlay()
-                menuVisible = false
-                if (!openOfflineMode()) {
-                    toast("No cached offline videos yet")
-                    showMainMenu()
-                }
-            })
             addView(button("Connection settings") { showConnectionSettingsScreen() })
             addView(button("Android settings") { showAndroidSettingsScreen() })
             addView(button("Close menu") {
@@ -292,6 +324,15 @@ class MainActivity : Activity() {
             clearOverlay()
             menuVisible = false
             connectAndLoad()
+        })
+        panel.addView(button("Download status") { showDownloadStatusScreen() })
+        panel.addView(button("Open offline") {
+            clearOverlay()
+            menuVisible = false
+            if (!openOfflineMode()) {
+                toast("No cached offline videos yet")
+                showConnectionSettingsScreen()
+            }
         })
         panel.addView(button("Back to menu") { showMainMenu() })
         showOverlay(panel)
@@ -377,7 +418,7 @@ class MainActivity : Activity() {
                     showDownloadStatusScreen()
                 }
             })
-            addView(button("Back to menu") { showMainMenu() })
+            addView(button("Back to connection settings") { showConnectionSettingsScreen() })
         })
     }
 
@@ -592,10 +633,13 @@ class MainActivity : Activity() {
         if (activeMedia.isEmpty()) {
             wall.removeAllViews()
             tileViews.clear()
+            selectedItemIds.clear()
+            updateSelectionUi()
             showCenter("No media found")
             return
         }
         val activeIds = activeMedia.mapTo(mutableSetOf()) { it.id }
+        selectedItemIds.retainAll(activeIds)
         tileViews.entries.toList().forEach { (id, tile) ->
             if (id !in activeIds) {
                 wall.removeView(tile)
@@ -613,11 +657,55 @@ class MainActivity : Activity() {
                 loadTile(this, progress, item)
             }
             tile.setOnTouchListener { _, event -> handleTileTouch(event, item.id) }
+            tile.setBackgroundColor(
+                if (item.id in selectedItemIds) Color.rgb(42, 112, 93) else Color.rgb(17, 18, 23)
+            )
+            tile.foreground = if (item.id in selectedItemIds) ColorDrawable(Color.argb(86, 86, 210, 172)) else null
             tile.layoutParams = FrameLayout.LayoutParams(rect.width, rect.height).apply {
                 leftMargin = rect.x
                 topMargin = rect.y
             }
         }
+        updateSelectionUi()
+    }
+
+    private fun toggleSelectedItem(itemId: String) {
+        if (itemId in selectedItemIds) {
+            selectedItemIds.remove(itemId)
+            showCenter("Deselected", 700)
+        } else {
+            selectedItemIds.add(itemId)
+            showCenter("${selectedItemIds.size} selected", 700)
+        }
+        updateSelectionUi()
+    }
+
+    private fun updateSelectionUi() {
+        selectedOnlyButton.visibility = if (selectedItemIds.isEmpty()) View.GONE else View.VISIBLE
+        selectedOnlyButton.text = "Show selected (${selectedItemIds.size})"
+        tileViews.forEach { (id, tile) ->
+            tile.setBackgroundColor(
+                if (id in selectedItemIds) Color.rgb(42, 112, 93) else Color.rgb(17, 18, 23)
+            )
+            tile.foreground = if (id in selectedItemIds) ColorDrawable(Color.argb(86, 86, 210, 172)) else null
+        }
+    }
+
+    private fun showSelectedItemsOnly() {
+        if (selectedItemIds.isEmpty()) return
+        val selectedItems = activeMedia.filter { it.id in selectedItemIds }
+        if (selectedItems.isEmpty()) {
+            selectedItemIds.clear()
+            updateSelectionUi()
+            return
+        }
+        activeMedia = selectedItems
+        itemCount = selectedItems.size.coerceIn(1, MAX_ANDROID_ITEMS)
+        prefs.edit().putInt("itemCount", itemCount).apply()
+        selectedItemIds.clear()
+        renderWall()
+        showCenter("$itemCount selected item${if (itemCount == 1) "" else "s"}", 900)
+        scheduleRandomSwap()
     }
 
     private fun layoutTiles(items: List<MediaItem>): List<TileRect> {
@@ -776,6 +864,7 @@ class MainActivity : Activity() {
         val activeIds = activeMedia.mapTo(mutableSetOf()) { it.id }
         val candidates = allMedia.filter { it.id !in activeIds }
         if (candidates.isEmpty()) return
+        selectedItemIds.remove(itemId)
         val oldTile = tileViews.remove(itemId)
         oldTile?.let { wall.removeView(it) }
         activeMedia = activeMedia.toMutableList().also { it[index] = candidates.random() }
