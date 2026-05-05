@@ -166,6 +166,11 @@ input {
   transform: scale(1);
 }
 
+.tile.loading:not(.debug-visible) {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .tile.fading {
   opacity: 0;
   transform: scale(1.015);

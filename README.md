@@ -18,6 +18,7 @@ Both versions use the same shared wall UI, so feature updates should land in bot
 - Space pauses/resumes random swaps.
 - Shift+D opens the Docker diagnostics view with transcode status and recent server logs.
 - Menu option for per-video loading debug shows source, browser buffer, and playback state on each tile.
+- Docker/web playback limits simultaneous video starts so videos load progressively instead of all competing at once.
 - ArrowRight refreshes the visible set.
 - ArrowUp/ArrowDown adjusts visible item count.
 - Right-click tiles to select them, then middle-click to show only selected tiles.

@@ -34,6 +34,7 @@ const controls = {
 
 const STORAGE_KEY = "mediaWall.settings.v2";
 const REFRESH_MS = 10000;
+const WEB_VIDEO_LOAD_LIMIT = 4;
 const queryHost = new URLSearchParams(window.location.search).get("host");
 const host = window.mediaWall?.mode === "desktop" || queryHost === "desktop" ? "desktop" : "web";
 
@@ -54,6 +55,8 @@ const state = {
   statusSplashTimer: null,
   videoWatchTimer: null,
   diagnosticsTimer: null,
+  activeVideoLoads: 0,
+  videoLoadQueue: [],
   paused: false
 };
 
@@ -228,10 +231,63 @@ function measureMedia(item, element) {
 }
 
 function mediaSourceLabel(item, media) {
+  if (media.dataset.loadQueued === "true") return `${media.dataset.pendingSource || "video"} queued`;
   if (media.dataset.usingOptimized === "true") return "optimized";
   if (media.dataset.usingFallback === "true") return "transcoded";
   if (item.needsTranscode && item.fallbackUrl) return "transcode pending";
   return "original";
+}
+
+function videoSourceForItem(item) {
+  if (item.optimizedUrl) {
+    return { url: item.optimizedUrl, source: "optimized" };
+  }
+  if (item.needsTranscode && item.fallbackUrl) {
+    return { url: item.fallbackUrl, source: "transcoded" };
+  }
+  return { url: item.url, source: "original" };
+}
+
+function applyVideoSource(media, source) {
+  delete media.dataset.usingOptimized;
+  delete media.dataset.usingFallback;
+  media.dataset.pendingSource = source.source;
+  if (source.source === "optimized") media.dataset.usingOptimized = "true";
+  if (source.source === "transcoded") media.dataset.usingFallback = "true";
+  media.src = source.url;
+}
+
+function processVideoLoadQueue() {
+  if (host !== "web") return;
+
+  state.videoLoadQueue = state.videoLoadQueue.filter(({ tile }) => tile.isConnected);
+  while (state.activeVideoLoads < WEB_VIDEO_LOAD_LIMIT && state.videoLoadQueue.length) {
+    const queued = state.videoLoadQueue.shift();
+    if (!queued.tile.isConnected || queued.media.dataset.loadStarted === "true") continue;
+    queued.media.dataset.loadQueued = "false";
+    queued.media.dataset.loadStarted = "true";
+    state.activeVideoLoads += 1;
+    applyVideoSource(queued.media, queued.source);
+    queued.media.load();
+    queued.media.play().catch(() => {});
+    updateVideoDebug(queued.tile, queued.item, queued.media);
+  }
+}
+
+function releaseVideoLoadSlot(media) {
+  if (host !== "web" || media.dataset.loadReleased === "true") return;
+  media.dataset.loadReleased = "true";
+  if (media.dataset.loadStarted === "true") {
+    state.activeVideoLoads = Math.max(0, state.activeVideoLoads - 1);
+  }
+  processVideoLoadQueue();
+}
+
+function cancelVideoLoad(tile) {
+  const video = tile.querySelector("video");
+  if (!video) return;
+  state.videoLoadQueue = state.videoLoadQueue.filter((queued) => queued.media !== video);
+  releaseVideoLoadSlot(video);
 }
 
 function readyStateLabel(video) {
@@ -269,6 +325,10 @@ function updateVideoDebug(tile, item, video) {
   if (!visible) return;
 
   const source = mediaSourceLabel(item, video);
+  const queueIndex = state.videoLoadQueue.findIndex((queued) => queued.media === video);
+  const queueText = host === "web" && video.dataset.loadQueued === "true"
+    ? `web load queue ${queueIndex >= 0 ? queueIndex + 1 : "-"} / ${state.videoLoadQueue.length}`
+    : host === "web" ? `web active loads ${state.activeVideoLoads}/${WEB_VIDEO_LOAD_LIMIT}` : "desktop direct file";
   const waiting = tile.classList.contains("loading") ? "loading spinner on" : "playing/ready";
   const current = Number.isFinite(video.currentTime) ? `${video.currentTime.toFixed(1)}s` : "0s";
   const duration = Number.isFinite(video.duration) ? `${video.duration.toFixed(1)}s` : "unknown";
@@ -277,6 +337,7 @@ function updateVideoDebug(tile, item, video) {
 
   overlay.textContent = [
     `${waiting} | ${source}`,
+    queueText,
     `ready=${readyStateLabel(video)} network=${networkStateLabel(video)} ${paused}${stalled}`,
     `${bufferedVideoText(video)}`,
     `time ${current} / ${duration}`,
@@ -301,30 +362,36 @@ function createTile(item) {
   const markReady = () => tile.classList.remove("loading");
 
   const media = document.createElement(item.type === "video" ? "video" : "img");
-  media.src = item.optimizedUrl || (item.needsTranscode && item.fallbackUrl ? item.fallbackUrl : item.url);
-  if (item.optimizedUrl) media.dataset.usingOptimized = "true";
-  if (!item.optimizedUrl && item.needsTranscode && item.fallbackUrl) media.dataset.usingFallback = "true";
   media.draggable = false;
 
   if (item.type === "video") {
     const debug = document.createElement("div");
     debug.className = "video-debug hidden";
+    const initialSource = videoSourceForItem(item);
     media.autoplay = true;
     media.loop = true;
     media.muted = true;
     media.playsInline = true;
+    media.preload = host === "web" ? "metadata" : "auto";
     media.dataset.lastTime = "0";
     media.dataset.stuckTicks = "0";
+    media.dataset.pendingSource = initialSource.source;
+    media.dataset.loadQueued = host === "web" ? "true" : "false";
+    if (host === "desktop") {
+      media.dataset.loadStarted = "true";
+      media.dataset.loadReleased = "true";
+      applyVideoSource(media, initialSource);
+    }
     media.addEventListener("error", () => {
       if (!item.fallbackUrl || media.dataset.usingFallback === "true") {
         tile.classList.remove("loading");
         tile.classList.add("failed");
+        releaseVideoLoadSlot(media);
         updateVideoDebug(tile, item, media);
         return;
       }
       tile.classList.add("loading");
-      media.dataset.usingFallback = "true";
-      media.src = item.fallbackUrl;
+      applyVideoSource(media, { url: item.fallbackUrl, source: "transcoded" });
       media.load();
       media.play().catch(() => {});
       updateVideoDebug(tile, item, media);
@@ -335,15 +402,18 @@ function createTile(item) {
     }, { once: true });
     media.addEventListener("loadeddata", () => {
       markReady();
+      releaseVideoLoadSlot(media);
       updateVideoDebug(tile, item, media);
     });
     media.addEventListener("canplay", () => {
       markReady();
+      releaseVideoLoadSlot(media);
       updateVideoDebug(tile, item, media);
       media.play().catch(() => {});
     });
     media.addEventListener("playing", () => {
       markReady();
+      releaseVideoLoadSlot(media);
       media.dataset.stuckTicks = "0";
       updateVideoDebug(tile, item, media);
     });
@@ -358,6 +428,7 @@ function createTile(item) {
     });
     media.addEventListener("timeupdate", () => {
       markReady();
+      releaseVideoLoadSlot(media);
       media.dataset.stuckTicks = "0";
       updateVideoDebug(tile, item, media);
       if (media.duration && media.currentTime >= media.duration - 0.25) {
@@ -365,7 +436,13 @@ function createTile(item) {
       }
     });
     tile.append(debug);
+    if (host === "web") {
+      state.videoLoadQueue.push({ tile, item, media, source: initialSource });
+      updateVideoDebug(tile, item, media);
+      processVideoLoadQueue();
+    }
   } else {
+    media.src = item.url;
     media.decoding = "async";
     media.addEventListener("load", () => {
       markReady();
@@ -399,6 +476,7 @@ function syncTiles() {
 
   for (const [id, tile] of state.tiles.entries()) {
     if (activeIds.has(id)) continue;
+    cancelVideoLoad(tile);
     tile.classList.add("fading");
     tile.classList.remove("visible");
     state.selectedItems.delete(id);
@@ -600,6 +678,24 @@ function solveLayout(items, width, height, averageSize, orientation) {
 }
 
 function calculateLayout(items, width, height, averageSize) {
+  if (items.length === 1) {
+    const ratio = Math.max(0.16, Math.min(6, getRatio(items[0])));
+    const maxWidth = width * 0.92;
+    const maxHeight = height * 0.92;
+    let itemWidth = maxWidth;
+    let itemHeight = itemWidth / ratio;
+    if (itemHeight > maxHeight) {
+      itemHeight = maxHeight;
+      itemWidth = itemHeight * ratio;
+    }
+    return new Map([[items[0].id, {
+      x: (width - itemWidth) / 2,
+      y: (height - itemHeight) / 2,
+      width: itemWidth,
+      height: itemHeight
+    }]]);
+  }
+
   const rowLayout = solveLayout(items, width, height, averageSize, "rows");
   const columnLayout = solveLayout(items, width, height, averageSize, "columns");
   const screenRatio = width / Math.max(1, height);
@@ -812,6 +908,8 @@ function loadFolderResult(result, resetWall = false) {
     state.shownThisSession.clear();
     state.completedVideos.clear();
     state.ratios.clear();
+    state.videoLoadQueue = [];
+    state.activeVideoLoads = 0;
     state.tiles.forEach((tile) => tile.remove());
     state.tiles.clear();
     pickInitialItems();
@@ -1211,6 +1309,7 @@ for (const input of Object.values(controls)) {
     saveSettings();
     if (input === controls.videoDebug) {
       refreshVideoDebug();
+      processVideoLoadQueue();
       return;
     }
     reconcileItemCount();
