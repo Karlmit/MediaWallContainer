@@ -55,8 +55,8 @@
             <input id="minBitrateMbps" type="number" min="0" max="1000" value="8">
           </label>
           <label>
-            <span>NVENC CQ</span>
-            <input id="quality" type="number" min="16" max="34" value="23">
+            <span>NVENC CQ / Docker OPTIMIZE_CRF</span>
+            <input id="quality" type="number" min="16" max="34" value="24">
           </label>
           <label>
             <span>NVENC preset</span>
@@ -85,19 +85,24 @@
         </div>
 
         <details>
-          <summary>Compose paths</summary>
+          <summary>Compose recommendation paths</summary>
+          <p class="hint">
+            These do not control the Windows optimizer folders above. They only fill in the
+            `mediawall-compose.recommended.yml` file that is saved when the run finishes.
+            Match them to the Unraid paths in your Docker compose.
+          </p>
           <div class="grid compose-grid">
             <label>
-              <span>Unraid original path</span>
-              <input id="composeMediaPath" value="/mnt/user/Media">
+              <span>Compose `/media` original folder</span>
+              <input id="composeMediaPath" value="/mnt/user/Media" placeholder="/mnt/user/tsp_stash/Wall">
             </label>
             <label>
-              <span>Unraid optimized path</span>
-              <input id="composeOptimizedPath" value="/mnt/user/appdata/mediawall-optimized">
+              <span>Compose `/optimized` output folder</span>
+              <input id="composeOptimizedPath" value="/mnt/user/appdata/mediawall-optimized" placeholder="/mnt/user/cache/Wall-Optimized-720-New3">
             </label>
             <label>
-              <span>Unraid cache path</span>
-              <input id="composeCachePath" value="/mnt/user/appdata/mediawall-cache">
+              <span>Compose `/cache` transcode folder</span>
+              <input id="composeCachePath" value="/mnt/user/appdata/mediawall-cache" placeholder="/mnt/user/cache/Wall">
             </label>
             <label>
               <span>Web port</span>

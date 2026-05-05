@@ -22,7 +22,7 @@ Double-click:
 tools\local-optimizer\run-gui-windows.bat
 ```
 
-The GUI shows active transcodes, percent, speed, fps, totals, logs, and the generated compose recommendation. On a powerful NVIDIA GPU, increase concurrent jobs until GPU usage is high but the PC remains responsive. `p1` is fastest, while `p5` is a balanced preset.
+The GUI shows active transcodes, percent, speed, fps, totals, logs, and the generated compose recommendation. The compose path fields only affect that generated recommendation; the original/output folder pickers are what the optimizer actually uses. On a powerful NVIDIA GPU, increase concurrent jobs until GPU usage is high but the PC remains responsive. `p1` is fastest, while `p5` is a balanced preset.
 
 ## Terminal Run
 
@@ -46,7 +46,7 @@ node tools\local-optimizer\optimizer.js `
   --output "D:\MediaWallOptimized" `
   --mode all `
   --max-height 720 `
-  --quality 23 `
+  --quality 24 `
   --nvenc-preset p5 `
   --concurrency 6 `
   --limit 500
@@ -72,8 +72,8 @@ Use the compose recommendation printed at the end. The key values are:
 OPTIMIZED_MEDIA_DIR: "/optimized"
 OPTIMIZE_VIDEOS: "needed"
 OPTIMIZE_MAX_HEIGHT: "720"
-OPTIMIZE_CRF: "23"
+OPTIMIZE_CRF: "24"
 OPTIMIZE_MIN_BITRATE_MBPS: "8"
 ```
 
-If the local optimizer used `nvenc`, the Docker server can still use `vaapi` or `software` later for new files. The important matching settings are `OPTIMIZE_MAX_HEIGHT` and `OPTIMIZE_CRF`, because MediaWall uses those when deciding whether an optimized cache entry is reusable.
+If the local optimizer used `nvenc`, the Docker server can still use `vaapi` or `software` later for new files. The important matching settings are `OPTIMIZE_MAX_HEIGHT` and `OPTIMIZE_CRF`, because MediaWall uses those when deciding whether an optimized cache entry is reusable. Docker defaults `OPTIMIZE_CRF` to `24`, so either leave the optimizer quality at `24` or add the matching `OPTIMIZE_CRF` value to compose.

@@ -122,7 +122,7 @@ Or double-click:
 tools\local-optimizer\run-gui-windows.bat
 ```
 
-The GUI shows live logs, active transcodes, percent, speed, fps, totals, and the generated compose recommendation. Use higher concurrent jobs to push a strong NVIDIA GPU harder. Start around `6`, then raise it if GPU usage is not near full and disk/network throughput still has room.
+The GUI shows live logs, active transcodes, percent, speed, fps, totals, and the generated compose recommendation. The compose path fields only affect that generated recommendation; the Windows input/output folders at the top are what the optimizer actually uses. Use higher concurrent jobs to push a strong NVIDIA GPU harder. Start around `6`, then raise it if GPU usage is not near full and disk/network throughput still has room.
 
 The terminal version is still available:
 
@@ -144,7 +144,7 @@ node tools\local-optimizer\optimizer.js `
   --output "D:\MediaWallOptimized" `
   --mode all `
   --max-height 720 `
-  --quality 23 `
+  --quality 24 `
   --nvenc-preset p5 `
   --concurrency 6 `
   --limit 500 `
@@ -170,7 +170,7 @@ services:
       OPTIMIZED_MEDIA_DIR: "/optimized"
       OPTIMIZE_VIDEOS: "all"
       OPTIMIZE_MAX_HEIGHT: "720"
-      OPTIMIZE_CRF: "23"
+      OPTIMIZE_CRF: "24"
       OPTIMIZE_MIN_BITRATE_MBPS: "8"
       OPTIMIZE_AUDIO_BITRATE: "128k"
     volumes:
@@ -179,7 +179,7 @@ services:
       - "/mnt/user/appdata/mediawall-optimized:/optimized"
 ```
 
-The Docker server can still use `TRANSCODE_ACCEL=vaapi` or `software` for new files later. The encoder does not need to match the Windows prewarm run, but `OPTIMIZE_MAX_HEIGHT` and `OPTIMIZE_CRF` must match so cache entries are considered reusable. Use the same `OPTIMIZE_VIDEOS` mode if you want Docker to follow the same `all` or `needed` policy for future files.
+The Docker server can still use `TRANSCODE_ACCEL=vaapi` or `software` for new files later. The encoder does not need to match the Windows prewarm run, but `OPTIMIZE_MAX_HEIGHT` and `OPTIMIZE_CRF` must match so cache entries are considered reusable. Docker defaults `OPTIMIZE_CRF` to `24`, so either leave the optimizer quality at `24` or add the matching `OPTIMIZE_CRF` value to compose. Use the same `OPTIMIZE_VIDEOS` mode if you want Docker to follow the same `all` or `needed` policy for future files.
 
 Transcoding options:
 

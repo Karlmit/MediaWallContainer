@@ -493,7 +493,7 @@ async function main() {
     console.log("  --mode needed|all");
     console.log("  --max-height 720");
     console.log("  --min-bitrate-mbps 8");
-    console.log("  --quality 23");
+    console.log("  --quality 24");
     console.log("  --nvenc-preset p5");
     console.log("  --audio-bitrate 128k");
     console.log("  --concurrency 2");
@@ -537,7 +537,7 @@ async function main() {
 
   const quality = cli.quality
     ? Number(cli.quality)
-    : await promptNumber("NVENC CQ quality, lower is better", 23, 16, 34);
+    : await promptNumber("NVENC CQ quality / Docker OPTIMIZE_CRF, lower is better", 24, 16, 34);
 
   const nvencPreset = cli["nvenc-preset"] || "p5";
 
