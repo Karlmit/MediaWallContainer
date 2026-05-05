@@ -60,6 +60,7 @@ class MainActivity : Activity() {
     private var pinCode = ""
     private var allMedia = emptyList<MediaItem>()
     private var activeMedia = emptyList<MediaItem>()
+    private val tileViews = mutableMapOf<String, FrameLayout>()
     private var touchStartY = 0f
     private var touchLastY = 0f
     private var touchStartTime = 0L
@@ -560,25 +561,49 @@ class MainActivity : Activity() {
         return allMedia.shuffled().take(minOf(itemCount, MAX_ANDROID_ITEMS, allMedia.size))
     }
 
+    private fun resizeActiveMedia(targetCount: Int): List<MediaItem> {
+        if (allMedia.isEmpty() || targetCount <= 0) return emptyList()
+        val target = minOf(targetCount, MAX_ANDROID_ITEMS, allMedia.size)
+        val existing = activeMedia.filter { active ->
+            allMedia.any { it.id == active.id }
+        }.take(target).toMutableList()
+        if (existing.size >= target) return existing
+
+        val existingIds = existing.mapTo(mutableSetOf()) { it.id }
+        val candidates = allMedia.filter { it.id !in existingIds }.shuffled()
+        existing.addAll(candidates.take(target - existing.size))
+        return existing
+    }
+
     private fun renderWall() {
-        wall.removeAllViews()
         if (activeMedia.isEmpty()) {
+            wall.removeAllViews()
+            tileViews.clear()
             showCenter("No media found")
             return
         }
+        val activeIds = activeMedia.mapTo(mutableSetOf()) { it.id }
+        tileViews.entries.toList().forEach { (id, tile) ->
+            if (id !in activeIds) {
+                wall.removeView(tile)
+                tileViews.remove(id)
+            }
+        }
         layoutTiles(activeMedia).forEachIndexed { index, rect ->
             val item = activeMedia[index]
-            val tile = FrameLayout(this).apply {
+            val tile = tileViews[item.id] ?: FrameLayout(this).apply {
                 setBackgroundColor(Color.rgb(17, 18, 23))
-                setOnTouchListener { _, event -> handleTileTouch(event, item.id) }
+                val progress = ProgressBar(this@MainActivity)
+                addView(progress, FrameLayout.LayoutParams(56, 56, Gravity.CENTER))
+                tileViews[item.id] = this
+                wall.addView(this)
+                loadTile(this, progress, item)
             }
-            val progress = ProgressBar(this)
-            tile.addView(progress, FrameLayout.LayoutParams(56, 56, Gravity.CENTER))
-            wall.addView(tile, FrameLayout.LayoutParams(rect.width, rect.height).apply {
+            tile.setOnTouchListener { _, event -> handleTileTouch(event, item.id) }
+            tile.layoutParams = FrameLayout.LayoutParams(rect.width, rect.height).apply {
                 leftMargin = rect.x
                 topMargin = rect.y
-            })
-            loadTile(tile, progress, item)
+            }
         }
     }
 
@@ -738,6 +763,8 @@ class MainActivity : Activity() {
         val activeIds = activeMedia.mapTo(mutableSetOf()) { it.id }
         val candidates = allMedia.filter { it.id !in activeIds }
         if (candidates.isEmpty()) return
+        val oldTile = tileViews.remove(itemId)
+        oldTile?.let { wall.removeView(it) }
         activeMedia = activeMedia.toMutableList().also { it[index] = candidates.random() }
         renderWall()
     }
@@ -841,9 +868,11 @@ class MainActivity : Activity() {
 
     private fun changeItemCount(delta: Int) {
         val maxItems = minOf(MAX_ANDROID_ITEMS, max(1, allMedia.size))
-        itemCount = (itemCount + delta).coerceIn(1, maxItems)
+        val nextCount = (itemCount + delta).coerceIn(1, maxItems)
+        if (nextCount == itemCount) return
+        itemCount = nextCount
         prefs.edit().putInt("itemCount", itemCount).apply()
-        activeMedia = pickActiveMedia()
+        activeMedia = resizeActiveMedia(itemCount)
         renderWall()
         showCenter("$itemCount item${if (itemCount == 1) "" else "s"}", 900)
         scheduleRandomSwap()
