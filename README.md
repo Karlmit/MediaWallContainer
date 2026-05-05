@@ -106,6 +106,58 @@ The `/cache` mount stores generated browser-compatible MP4 files. Originals are 
 
 The optional `/optimized` mount stores smaller playback copies for videos that are already browser-compatible but too large for smooth multi-video playback. Originals are never changed. When a source video is removed from `/media`, its optimized copy is removed from `/optimized` on the next scan.
 
+## Local Optimizer For First Run
+
+If the first optimized-video pass is large, you can run it once on a stronger Windows PC and then move the finished optimized folder to Unraid.
+
+The local optimizer lives in `tools/local-optimizer/`:
+
+```powershell
+npm run optimize:local
+```
+
+Or double-click:
+
+```text
+tools\local-optimizer\run-windows.bat
+```
+
+You can also run it with exact settings:
+
+```powershell
+node tools\local-optimizer\optimizer.js `
+  --original "\\tower\Media" `
+  --output "D:\MediaWallOptimized" `
+  --mode all `
+  --max-height 720 `
+  --encoder nvenc `
+  --quality 23 `
+  --concurrency 2 `
+  --limit 500
+```
+
+The tool asks for the original media folder, optimized output folder, encoder, quality, max height, and file limit. It creates MP4 files plus a `manifest.json` that the Docker app can reuse.
+
+For best compatibility, point the original folder at the same SMB share that Unraid uses for `/media`. MediaWall matches optimized files by relative path, source size, and source modified time. If you optimize from a copied folder whose timestamps differ from the Unraid originals, Docker may treat the optimized files as stale and rebuild them.
+
+On an NVIDIA Windows PC, choose `nvenc` as the encoder. After the prewarm finishes, copy or mount the optimized output folder to Unraid and use it as `/optimized`.
+
+The tool prints compose settings like:
+
+```yaml
+environment:
+  OPTIMIZED_MEDIA_DIR: "/optimized"
+  OPTIMIZE_VIDEOS: "needed"
+  OPTIMIZE_MAX_HEIGHT: "720"
+  OPTIMIZE_CRF: "23"
+  OPTIMIZE_MIN_BITRATE_MBPS: "8"
+  OPTIMIZE_AUDIO_BITRATE: "128k"
+volumes:
+  - "/mnt/user/appdata/mediawall-optimized:/optimized"
+```
+
+The Docker server can still use `TRANSCODE_ACCEL=vaapi` or `software` for new files later. The encoder does not need to match the Windows prewarm run, but `OPTIMIZE_MAX_HEIGHT` and `OPTIMIZE_CRF` should match so cache entries are considered reusable.
+
 Transcoding options:
 
 - `PRECACHE_VIDEOS=true` scans video codecs and starts converting incompatible files in the background.

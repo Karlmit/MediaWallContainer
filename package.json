@@ -8,6 +8,7 @@
     "start": "node src/server/server.js",
     "start:web": "node src/server/server.js",
     "start:desktop": "electron .",
+    "optimize:local": "node tools/local-optimizer/optimizer.js",
     "build:desktop": "electron-packager . \"Media Wall\" --platform=win32 --arch=x64 --out=dist-latest --overwrite --ignore=\"^/dist[^/\\\\]*($|[/\\\\])\" --ignore=\"^/Media-Wall-New($|[/\\\\])\"",
     "check": "node --check src/server/server.js && node --check src/desktop/main.js && node --check src/desktop/preload.js && node --check src/renderer/app.js && node --check src/shared/media.js"
   },
