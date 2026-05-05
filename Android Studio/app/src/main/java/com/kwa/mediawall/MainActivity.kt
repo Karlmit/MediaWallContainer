@@ -1,6 +1,7 @@
 package com.kwa.mediawall
 
 import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.net.Uri
@@ -20,6 +21,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.VideoView
 import org.json.JSONArray
@@ -43,6 +45,7 @@ class MainActivity : Activity() {
     private lateinit var wall: FrameLayout
     private lateinit var splash: TextView
     private lateinit var menuButton: Button
+    private var overlayView: View? = null
 
     private var serverUrl = ""
     private var password = ""
@@ -137,24 +140,26 @@ class MainActivity : Activity() {
     }
 
     private fun showPinScreen() {
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
         menuVisible = true
         wall.removeAllViews()
-        root.addView(panel("Unlock MediaWall").apply {
+        showOverlay(panel("Unlock MediaWall").apply {
             val pinInput = input("PIN", true)
             addView(pinInput)
             addView(button("Unlock") {
                 if (pinInput.text.toString() == pinCode) {
-                    root.removeView(this)
+                    clearOverlay()
                     menuVisible = false
                     if (serverUrl.isBlank()) showSetupScreen() else connectAndLoad()
                 } else {
                     toast("Wrong PIN")
                 }
             })
-        }, centeredPanelParams())
+        })
     }
 
     private fun showSetupScreen() {
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
         menuVisible = true
         wall.removeAllViews()
         val panel = panel("MediaWall Android")
@@ -183,7 +188,7 @@ class MainActivity : Activity() {
         panel.addView(pinToggle)
         panel.addView(pinInput)
         panel.addView(button("Connect") {
-            serverUrl = urlInput.text.toString().trim().trimEnd('/')
+            serverUrl = normalizeServerUrl(urlInput.text.toString())
             password = passwordInput.text.toString()
             localOptimizedCache = cacheToggle.isChecked
             pinEnabled = pinToggle.isChecked
@@ -195,7 +200,7 @@ class MainActivity : Activity() {
                 .putBoolean("pinEnabled", pinEnabled)
                 .putString("pinCode", pinCode)
                 .apply()
-            root.removeView(panel)
+            clearOverlay()
             menuVisible = false
             connectAndLoad()
         })
@@ -203,7 +208,7 @@ class MainActivity : Activity() {
             File(filesDir, "optimized").deleteRecursively()
             toast("Private cache cleared")
         })
-        root.addView(panel, centeredPanelParams())
+        showOverlay(panel)
     }
 
     private fun panel(title: String): LinearLayout {
@@ -222,10 +227,25 @@ class MainActivity : Activity() {
 
     private fun centeredPanelParams(): FrameLayout.LayoutParams {
         return FrameLayout.LayoutParams(
-            min(resources.displayMetrics.widthPixels - 80, 760),
+            min(resources.displayMetrics.widthPixels - 40, 760),
             FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.CENTER
         )
+    }
+
+    private fun showOverlay(content: View) {
+        clearOverlay()
+        val scroll = ScrollView(this).apply {
+            setPadding(0, 20, 0, 20)
+            addView(content)
+        }
+        overlayView = scroll
+        root.addView(scroll, centeredPanelParams())
+    }
+
+    private fun clearOverlay() {
+        overlayView?.let { root.removeView(it) }
+        overlayView = null
     }
 
     private fun input(hintText: String, passwordField: Boolean): EditText {
@@ -246,6 +266,7 @@ class MainActivity : Activity() {
     }
 
     private fun connectAndLoad() {
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         showCenter("Connecting")
         executor.execute {
             try {
@@ -259,7 +280,7 @@ class MainActivity : Activity() {
                 }
             } catch (error: Exception) {
                 mainHandler.post {
-                    showCenter("Connection failed: ${error.message}")
+                    showCenter("Connection failed: ${error.message}", 3500)
                     showSetupScreen()
                 }
             }
@@ -272,11 +293,16 @@ class MainActivity : Activity() {
         val connection = (URL("$serverUrl/login").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             doOutput = true
+            instanceFollowRedirects = false
             setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
             outputStream.use { it.write(body.toByteArray()) }
         }
-        sessionCookie = connection.headerFields["Set-Cookie"]?.firstOrNull()?.substringBefore(";") ?: sessionCookie
-        connection.inputStream.close()
+        val status = connection.responseCode
+        sessionCookie = connection.headerFields["Set-Cookie"]?.firstOrNull()?.substringBefore(";") ?: ""
+        connection.inputStreamOrError().close()
+        if (status !in 200..399 || sessionCookie.isBlank()) {
+            throw IllegalStateException("login failed, check password")
+        }
     }
 
     private fun fetchMedia(): List<MediaItem> {
@@ -299,7 +325,11 @@ class MainActivity : Activity() {
 
     private fun requestText(url: String): String {
         val connection = open(url)
-        return connection.inputStream.bufferedReader().use { it.readText() }
+        val status = connection.responseCode
+        val body = connection.inputStreamOrError().bufferedReader().use { it.readText() }
+        if (status == 401) throw IllegalStateException("unauthorized, check password")
+        if (status !in 200..299) throw IllegalStateException("HTTP $status")
+        return body
     }
 
     private fun open(url: String): HttpURLConnection {
@@ -308,6 +338,18 @@ class MainActivity : Activity() {
             readTimeout = 30_000
             if (sessionCookie.isNotBlank()) setRequestProperty("Cookie", sessionCookie)
         }
+    }
+
+    private fun HttpURLConnection.inputStreamOrError() = try {
+        inputStream
+    } catch (_: Exception) {
+        errorStream ?: throw IllegalStateException("HTTP $responseCode")
+    }
+
+    private fun normalizeServerUrl(value: String): String {
+        val trimmed = value.trim().trimEnd('/')
+        if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed
+        return "http://$trimmed"
     }
 
     private fun absoluteUrl(url: String): String {
