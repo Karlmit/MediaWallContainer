@@ -9,6 +9,12 @@ const { spawn } = require("child_process");
 const { VIDEO_EXTENSIONS } = require("../../src/shared/media");
 
 const manifestVersion = 1;
+let jsonOutput = false;
+
+function emitEvent(type, payload = {}) {
+  if (!jsonOutput) return;
+  console.log(JSON.stringify({ type, at: new Date().toISOString(), ...payload }));
+}
 
 function parseArgs(argv) {
   const args = {};
@@ -344,6 +350,9 @@ function ffmpegArgs(inputPath, outputPath, probe, settings) {
   const args = [
     "-y",
     "-hide_banner",
+    "-nostats",
+    "-progress",
+    "pipe:2",
     "-i",
     inputPath,
     "-map",
@@ -475,6 +484,7 @@ async function writeComposeRecommendation(settings, paths) {
 
 async function main() {
   const cli = parseArgs(process.argv.slice(2));
+  jsonOutput = cli.json === "true";
 
   if (cli.help) {
     console.log("Usage: node tools/local-optimizer/optimizer.js --original <folder> --output <folder> [options]");
@@ -484,6 +494,7 @@ async function main() {
     console.log("  --max-height 720");
     console.log("  --min-bitrate-mbps 8");
     console.log("  --quality 23");
+    console.log("  --nvenc-preset p5");
     console.log("  --audio-bitrate 128k");
     console.log("  --concurrency 2");
     console.log("  --limit 500");
@@ -491,6 +502,7 @@ async function main() {
     console.log("  --compose-optimized-path /mnt/user/appdata/mediawall-optimized");
     console.log("  --compose-cache-path /mnt/user/appdata/mediawall-cache");
     console.log("  --compose-port 3060");
+    console.log("  --json true");
     console.log("  --install-missing true");
     console.log("");
     console.log("Encoder is forced to NVENC. No fallback is used.");
@@ -527,6 +539,8 @@ async function main() {
     ? Number(cli.quality)
     : await promptNumber("NVENC CQ quality, lower is better", 23, 16, 34);
 
+  const nvencPreset = cli["nvenc-preset"] || "p5";
+
   const audioBitrate = cli["audio-bitrate"] || await prompt("Audio bitrate", "128k");
 
   const concurrency = cli.concurrency
@@ -554,7 +568,7 @@ async function main() {
     quality,
     audioBitrate,
     concurrency,
-    nvencPreset: "p5"
+    nvencPreset
   };
 
   await checkNvenc(cli);
@@ -572,6 +586,19 @@ async function main() {
   let failed = 0;
 
   console.log(`\nFound ${videos.length} videos. Processing ${candidates.length}.\n`);
+  emitEvent("scan-complete", {
+    totalVideos: videos.length,
+    queuedVideos: candidates.length,
+    settings: {
+      mode,
+      maxHeight,
+      minBitrateMbps,
+      quality,
+      nvencPreset,
+      audioBitrate,
+      concurrency
+    }
+  });
 
   async function worker() {
     while (currentIndex < candidates.length) {
@@ -594,6 +621,15 @@ async function main() {
           await fs.access(path.join(outputRoot, entry.cacheFile));
           skipped += 1;
           console.log(`[skip] ${video.relativePath}`);
+          emitEvent("job-skipped", {
+            path: video.relativePath,
+            reason: "already-ready",
+            completed,
+            skipped,
+            failed,
+            processed: completed + skipped + failed,
+            total: candidates.length
+          });
           continue;
         } catch {
           // Rebuild missing output.
@@ -605,6 +641,15 @@ async function main() {
       if (!shouldOptimize(probe, settings)) {
         skipped += 1;
         console.log(`[skip] ${video.relativePath} already fits settings`);
+        emitEvent("job-skipped", {
+          path: video.relativePath,
+          reason: "already-fits-settings",
+          completed,
+          skipped,
+          failed,
+          processed: completed + skipped + failed,
+          total: candidates.length
+        });
         continue;
       }
 
@@ -623,9 +668,54 @@ async function main() {
       await saveManifest(manifestPath, manifest);
 
       console.log(`[start] ${video.relativePath}`);
+      emitEvent("job-started", {
+        path: video.relativePath,
+        size: stats.size,
+        durationSeconds: probe.durationSeconds,
+        worker: currentIndex,
+        completed,
+        skipped,
+        failed,
+        processed: completed + skipped + failed,
+        total: candidates.length
+      });
 
       try {
-        await run("ffmpeg", ffmpegArgs(video.fullPath, tempPath, probe, settings));
+        let progressState = {};
+        let progressBuffer = "";
+        await run("ffmpeg", ffmpegArgs(video.fullPath, tempPath, probe, settings), {
+          onStderr(chunk) {
+            progressBuffer += chunk;
+            const lines = progressBuffer.split(/\r?\n/);
+            progressBuffer = lines.pop() || "";
+
+            for (const line of lines) {
+              const separator = line.indexOf("=");
+              if (separator <= 0) continue;
+              const key = line.slice(0, separator);
+              const value = line.slice(separator + 1);
+              progressState[key] = value;
+
+              if (key === "progress" || key === "speed") {
+                const rawTime = Number(progressState.out_time_ms || progressState.out_time_us || 0);
+                const currentSeconds = rawTime > 0 ? rawTime / 1000000 : 0;
+                const percent = probe.durationSeconds
+                  ? Math.min(99, Math.round((currentSeconds / probe.durationSeconds) * 100))
+                  : null;
+
+                emitEvent("job-progress", {
+                  path: video.relativePath,
+                  currentSeconds,
+                  durationSeconds: probe.durationSeconds,
+                  percent,
+                  speed: progressState.speed || null,
+                  fps: progressState.fps ? Number(progressState.fps) : null,
+                  bitrate: progressState.bitrate || null
+                });
+              }
+            }
+          }
+        });
 
         await fs.rename(tempPath, outputPath);
 
@@ -644,6 +734,16 @@ async function main() {
 
         completed += 1;
         console.log(`[ready] ${video.relativePath}`);
+        emitEvent("job-ready", {
+          path: video.relativePath,
+          originalSize: stats.size,
+          optimizedSize: optimizedStats.size,
+          completed,
+          skipped,
+          failed,
+          processed: completed + skipped + failed,
+          total: candidates.length
+        });
       } catch (error) {
         await fs.rm(tempPath, { force: true });
 
@@ -662,6 +762,15 @@ async function main() {
         console.error("");
         console.error(error.message);
         console.error("");
+        emitEvent("job-failed", {
+          path: video.relativePath,
+          error: error.message,
+          completed,
+          skipped,
+          failed,
+          processed: completed + skipped + failed,
+          total: candidates.length
+        });
       }
     }
   }
@@ -669,6 +778,13 @@ async function main() {
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
   console.log(`\nDone. Ready: ${completed}, skipped: ${skipped}, failed: ${failed}`);
+  emitEvent("summary", {
+    completed,
+    skipped,
+    failed,
+    processed: completed + skipped + failed,
+    total: candidates.length
+  });
 
   await writeComposeRecommendation(settings, composePaths);
 }

@@ -113,10 +113,24 @@ If the first optimized-video pass is large, you can run it once on a stronger Wi
 The local optimizer lives in `tools/local-optimizer/`:
 
 ```powershell
-npm run optimize:local
+npm run optimize:local:gui
 ```
 
 Or double-click:
+
+```text
+tools\local-optimizer\run-gui-windows.bat
+```
+
+The GUI shows live logs, active transcodes, percent, speed, fps, totals, and the generated compose recommendation. Use higher concurrent jobs to push a strong NVIDIA GPU harder. Start around `6`, then raise it if GPU usage is not near full and disk/network throughput still has room.
+
+The terminal version is still available:
+
+```powershell
+npm run optimize:local
+```
+
+Or double-click the terminal launcher:
 
 ```text
 tools\local-optimizer\run-windows.bat
@@ -131,7 +145,8 @@ node tools\local-optimizer\optimizer.js `
   --mode all `
   --max-height 720 `
   --quality 23 `
-  --concurrency 2 `
+  --nvenc-preset p5 `
+  --concurrency 6 `
   --limit 500 `
   --compose-media-path "/mnt/user/Media" `
   --compose-optimized-path "/mnt/user/appdata/mediawall-optimized" `

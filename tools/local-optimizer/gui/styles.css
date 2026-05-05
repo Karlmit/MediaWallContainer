@@ -1,0 +1,297 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, Segoe UI, system-ui, sans-serif;
+  background: #0b0d10;
+  color: #f3f6fb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background:
+    linear-gradient(135deg, rgba(38, 108, 97, 0.18), transparent 34%),
+    linear-gradient(315deg, rgba(129, 84, 32, 0.16), transparent 38%),
+    #0b0d10;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  border: 1px solid #343a44;
+  background: #1a1f27;
+  color: #f3f6fb;
+  border-radius: 6px;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.primary {
+  background: #2f7d68;
+  border-color: #3f9b83;
+  color: white;
+  font-weight: 700;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: minmax(360px, 460px) minmax(0, 1fr);
+  gap: 18px;
+  min-height: 100vh;
+  padding: 18px;
+}
+
+.settings,
+.dashboard {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(14, 17, 22, 0.86);
+  border-radius: 8px;
+  padding: 18px;
+  min-height: 0;
+}
+
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.title-row,
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 25px;
+  letter-spacing: 0;
+}
+
+p {
+  margin: 5px 0 0;
+  color: #aeb7c6;
+}
+
+.badge {
+  min-width: 76px;
+  text-align: center;
+  border: 1px solid #343a44;
+  background: #151a21;
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: #b9c4d4;
+}
+
+.badge.running {
+  border-color: #3f9b83;
+  color: #9ff0d3;
+}
+
+.field,
+.grid,
+details,
+.actions {
+  margin-top: 18px;
+}
+
+.two {
+  display: grid;
+  gap: 14px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+label span,
+summary,
+.section-title {
+  display: block;
+  margin-bottom: 7px;
+  color: #c9d2df;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+input,
+select {
+  width: 100%;
+  border: 1px solid #303741;
+  background: #10151c;
+  color: #f3f6fb;
+  border-radius: 6px;
+  padding: 10px 11px;
+  outline: none;
+}
+
+input:focus,
+select:focus {
+  border-color: #51a98f;
+}
+
+.path-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+details {
+  border: 1px solid #252b34;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+summary {
+  cursor: pointer;
+  margin-bottom: 0;
+}
+
+details[open] summary {
+  margin-bottom: 12px;
+}
+
+.compose-grid {
+  margin-top: 0;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.stats div,
+.job,
+.activity div {
+  border: 1px solid #272e38;
+  background: rgba(20, 24, 31, 0.86);
+  border-radius: 8px;
+}
+
+.stats div {
+  padding: 12px;
+}
+
+.stats span {
+  display: block;
+  color: #aeb7c6;
+  font-size: 12px;
+}
+
+.stats strong {
+  display: block;
+  margin-top: 5px;
+  font-size: 24px;
+}
+
+.progress-shell {
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #181d25;
+  border: 1px solid #2a3039;
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #52b38f, #d1a84f);
+  transition: width 180ms ease;
+}
+
+.jobs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 10px;
+  min-height: 82px;
+}
+
+.jobs.empty {
+  display: grid;
+  place-items: center;
+  color: #778294;
+  border: 1px dashed #303741;
+  border-radius: 8px;
+}
+
+.job {
+  padding: 12px;
+}
+
+.job-title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.job-meta {
+  margin-top: 8px;
+  color: #aeb7c6;
+  font-size: 12px;
+}
+
+.mini-shell {
+  height: 8px;
+  margin-top: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #0d1117;
+}
+
+.mini-bar {
+  height: 100%;
+  width: 0%;
+  background: #52b38f;
+}
+
+.activity {
+  display: grid;
+  gap: 8px;
+  max-height: 150px;
+  overflow: auto;
+}
+
+.activity div {
+  padding: 9px 11px;
+  color: #cbd4e1;
+  font-size: 13px;
+}
+
+.logs {
+  flex: 1;
+  min-height: 170px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid #272e38;
+  background: #080b0f;
+  border-radius: 8px;
+  padding: 12px;
+  color: #9fb0c6;
+  font-family: Consolas, ui-monospace, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 980px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+}

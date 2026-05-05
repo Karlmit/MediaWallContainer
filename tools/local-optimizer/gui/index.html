@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MediaWall Local Optimizer</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="app">
+      <section class="settings">
+        <div class="title-row">
+          <div>
+            <h1>MediaWall Optimizer</h1>
+            <p>NVENC prewarm for the Docker optimized library</p>
+          </div>
+          <div id="stateBadge" class="badge">Idle</div>
+        </div>
+
+        <div class="field two">
+          <label>
+            <span>Original media folder</span>
+            <div class="path-row">
+              <input id="original" placeholder="Same folder Unraid mounts as /media">
+              <button id="chooseOriginal" type="button">Browse</button>
+            </div>
+          </label>
+          <label>
+            <span>Optimized output folder</span>
+            <div class="path-row">
+              <input id="output" placeholder="Folder to copy or mount as /optimized">
+              <button id="chooseOutput" type="button">Browse</button>
+            </div>
+          </label>
+        </div>
+
+        <div class="grid">
+          <label>
+            <span>Mode</span>
+            <select id="mode">
+              <option value="needed">Needed</option>
+              <option value="all">All videos</option>
+            </select>
+          </label>
+          <label>
+            <span>Max height</span>
+            <select id="maxHeight">
+              <option value="720">720p</option>
+              <option value="1080">1080p</option>
+              <option value="1440">1440p</option>
+            </select>
+          </label>
+          <label>
+            <span>Min bitrate Mbps</span>
+            <input id="minBitrateMbps" type="number" min="0" max="1000" value="8">
+          </label>
+          <label>
+            <span>NVENC CQ</span>
+            <input id="quality" type="number" min="16" max="34" value="23">
+          </label>
+          <label>
+            <span>NVENC preset</span>
+            <select id="nvencPreset">
+              <option value="p1">p1 fastest</option>
+              <option value="p2">p2</option>
+              <option value="p3">p3</option>
+              <option value="p4">p4</option>
+              <option value="p5" selected>p5 balanced</option>
+              <option value="p6">p6</option>
+              <option value="p7">p7 best</option>
+            </select>
+          </label>
+          <label>
+            <span>Audio bitrate</span>
+            <input id="audioBitrate" value="128k">
+          </label>
+          <label>
+            <span>Concurrent jobs</span>
+            <input id="concurrency" type="number" min="1" max="16" value="6">
+          </label>
+          <label>
+            <span>Limit</span>
+            <input id="limit" type="number" min="0" value="0">
+          </label>
+        </div>
+
+        <details>
+          <summary>Compose paths</summary>
+          <div class="grid compose-grid">
+            <label>
+              <span>Unraid original path</span>
+              <input id="composeMediaPath" value="/mnt/user/Media">
+            </label>
+            <label>
+              <span>Unraid optimized path</span>
+              <input id="composeOptimizedPath" value="/mnt/user/appdata/mediawall-optimized">
+            </label>
+            <label>
+              <span>Unraid cache path</span>
+              <input id="composeCachePath" value="/mnt/user/appdata/mediawall-cache">
+            </label>
+            <label>
+              <span>Web port</span>
+              <input id="composePort" type="number" value="3060">
+            </label>
+          </div>
+        </details>
+
+        <div class="actions">
+          <button id="start" class="primary" type="button">Start optimizing</button>
+          <button id="stop" type="button" disabled>Stop</button>
+        </div>
+      </section>
+
+      <section class="dashboard">
+        <div class="stats">
+          <div><span>Total</span><strong id="total">0</strong></div>
+          <div><span>Processed</span><strong id="processed">0</strong></div>
+          <div><span>Ready</span><strong id="ready">0</strong></div>
+          <div><span>Skipped</span><strong id="skipped">0</strong></div>
+          <div><span>Failed</span><strong id="failed">0</strong></div>
+        </div>
+
+        <div class="progress-shell">
+          <div id="overallBar" class="progress-bar"></div>
+        </div>
+
+        <div class="section-title">Active transcodes</div>
+        <div id="activeJobs" class="jobs empty">No active transcodes</div>
+
+        <div class="section-title">Recent activity</div>
+        <div id="activity" class="activity"></div>
+
+        <div class="section-title">Logs</div>
+        <pre id="logs" class="logs"></pre>
+      </section>
+    </main>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

@@ -10,6 +10,22 @@ This tool pre-creates the optional `/optimized` video library outside the Docker
 
 ## Run
 
+Open the GUI:
+
+```powershell
+npm run optimize:local:gui
+```
+
+Double-click:
+
+```text
+tools\local-optimizer\run-gui-windows.bat
+```
+
+The GUI shows active transcodes, percent, speed, fps, totals, logs, and the generated compose recommendation. On a powerful NVIDIA GPU, increase concurrent jobs until GPU usage is high but the PC remains responsive. `p1` is fastest, while `p5` is a balanced preset.
+
+## Terminal Run
+
 Double-click:
 
 ```text
@@ -30,9 +46,9 @@ node tools\local-optimizer\optimizer.js `
   --output "D:\MediaWallOptimized" `
   --mode all `
   --max-height 720 `
-  --encoder nvenc `
   --quality 23 `
-  --concurrency 2 `
+  --nvenc-preset p5 `
+  --concurrency 6 `
   --limit 500
 ```
 
@@ -43,7 +59,7 @@ The tool asks for:
 - Whether to optimize all videos or only videos that need it
 - Max height such as `720` or `1080`
 - Bitrate threshold for `needed` mode
-- Encoder: `nvenc`, `software`, or `copy`
+- NVENC preset, such as `p1` fastest or `p5` balanced
 - Quality settings
 
 The output folder will contain MP4 files plus `manifest.json`. Mount that same folder as `/optimized` in Docker.
