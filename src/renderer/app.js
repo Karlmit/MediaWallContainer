@@ -37,6 +37,7 @@ const controls = {
 const STORAGE_KEY = "mediaWall.settings.v2";
 const REFRESH_MS = 10000;
 const WEB_VIDEO_LOAD_LIMIT = 4;
+const WEB_VIDEO_START_SLOT_MS = 900;
 const queryHost = new URLSearchParams(window.location.search).get("host");
 const host = window.mediaWall?.mode === "desktop" || queryHost === "desktop" ? "desktop" : "web";
 
@@ -273,6 +274,9 @@ function processVideoLoadQueue() {
     applyVideoSource(queued.media, queued.source);
     queued.media.load();
     queued.media.play().catch(() => {});
+    queued.media.dataset.loadSlotTimer = String(window.setTimeout(() => {
+      releaseVideoLoadSlot(queued.media);
+    }, WEB_VIDEO_START_SLOT_MS));
     updateVideoDebug(queued.tile, queued.item, queued.media);
   }
 }
@@ -280,6 +284,10 @@ function processVideoLoadQueue() {
 function releaseVideoLoadSlot(media) {
   if (host !== "web" || media.dataset.loadReleased === "true") return;
   media.dataset.loadReleased = "true";
+  if (media.dataset.loadSlotTimer) {
+    window.clearTimeout(Number(media.dataset.loadSlotTimer));
+    delete media.dataset.loadSlotTimer;
+  }
   if (media.dataset.loadStarted === "true") {
     state.activeVideoLoads = Math.max(0, state.activeVideoLoads - 1);
   }
