@@ -172,7 +172,7 @@ services:
       OPTIMIZE_MAX_HEIGHT: "720"
       OPTIMIZE_CRF: "24"
       OPTIMIZE_MIN_BITRATE_MBPS: "8"
-      OPTIMIZE_AUDIO_BITRATE: "128k"
+      OPTIMIZE_AUDIO_BITRATE: "0"
     volumes:
       - "/mnt/user/Media:/media:ro"
       - "/mnt/user/appdata/mediawall-cache:/cache"
@@ -180,6 +180,8 @@ services:
 ```
 
 The Docker server can still use `TRANSCODE_ACCEL=vaapi` or `software` for new files later. The encoder does not need to match the Windows prewarm run, but `OPTIMIZE_MAX_HEIGHT` and `OPTIMIZE_CRF` must match so cache entries are considered reusable. Docker defaults `OPTIMIZE_CRF` to `24`, so either leave the optimizer quality at `24` or add the matching `OPTIMIZE_CRF` value to compose. Use the same `OPTIMIZE_VIDEOS` mode if you want Docker to follow the same `all` or `needed` policy for future files.
+
+Set `OPTIMIZE_AUDIO_BITRATE=0` to strip audio from optimized copies. This is usually best for MediaWall because videos are muted in the wall and no audio track means smaller files.
 
 Transcoding options:
 

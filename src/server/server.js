@@ -280,7 +280,13 @@ async function optimizedCacheInfo(relativePath, fullPath) {
   const signature = sourceSignature(relativePath, stats);
   let entry = optimizedManifest.entries[sourceKey];
 
-  if (!entry || entry.sourceSignature !== signature || entry.maxHeight !== optimizeMaxHeight || entry.crf !== optimizeCrf) {
+  if (
+    !entry ||
+    entry.sourceSignature !== signature ||
+    entry.maxHeight !== optimizeMaxHeight ||
+    entry.crf !== optimizeCrf ||
+    entry.audioBitrate !== optimizeAudioBitrate
+  ) {
     if (entry?.cacheFile) {
       const existingPath = safeOptimizedPath(entry.cacheFile);
       if (existingPath) await fs.rm(existingPath, { force: true });
@@ -292,6 +298,7 @@ async function optimizedCacheInfo(relativePath, fullPath) {
       status: "pending",
       maxHeight: optimizeMaxHeight,
       crf: optimizeCrf,
+      audioBitrate: optimizeAudioBitrate,
       updatedAt: new Date().toISOString()
     };
     optimizedManifest.entries[sourceKey] = entry;
@@ -331,12 +338,20 @@ function videoFilterForMaxHeight() {
   return `scale=-2:min(${optimizeMaxHeight}\\,ih)`;
 }
 
+function shouldStripAudio(audioBitrate) {
+  return ["0", "none", "false", "off", "no"].includes(String(audioBitrate || "").toLowerCase());
+}
+
+function audioOutputArgs(audioBitrate) {
+  if (shouldStripAudio(audioBitrate)) return ["-an"];
+  return ["-map", "0:a:0?", "-c:a", "aac", "-b:a", audioBitrate || "160k"];
+}
+
 function softwareTranscodeArgs(inputPath, outputPath, options = {}) {
   const args = [
     "-y",
     "-i", inputPath,
-    "-map", "0:v:0",
-    "-map", "0:a:0?"
+    "-map", "0:v:0"
   ];
   if (options.downscale) args.push("-vf", videoFilterForMaxHeight());
   args.push(
@@ -344,8 +359,7 @@ function softwareTranscodeArgs(inputPath, outputPath, options = {}) {
     "-preset", options.preset || "veryfast",
     "-crf", String(options.crf || 23),
     "-pix_fmt", "yuv420p",
-    "-c:a", "aac",
-    "-b:a", options.audioBitrate || "160k",
+    ...audioOutputArgs(options.audioBitrate),
     "-movflags", "+faststart",
     outputPath
   );
@@ -359,12 +373,10 @@ function vaapiTranscodeArgs(inputPath, outputPath, options = {}) {
     "-vaapi_device", vaapiDevice,
     "-i", inputPath,
     "-map", "0:v:0",
-    "-map", "0:a:0?",
     "-vf", filter,
     "-c:v", "h264_vaapi",
     "-qp", String(options.qp || 23),
-    "-c:a", "aac",
-    "-b:a", options.audioBitrate || "160k",
+    ...audioOutputArgs(options.audioBitrate),
     "-movflags", "+faststart",
     outputPath
   ];
@@ -377,12 +389,10 @@ function qsvTranscodeArgs(inputPath, outputPath, options = {}) {
     "-filter_hw_device", "hw",
     "-i", inputPath,
     "-map", "0:v:0",
-    "-map", "0:a:0?",
     "-vf", options.downscale ? `${videoFilterForMaxHeight()},format=nv12,hwupload=extra_hw_frames=64` : "format=nv12,hwupload=extra_hw_frames=64",
     "-c:v", "h264_qsv",
     "-global_quality", String(options.globalQuality || 23),
-    "-c:a", "aac",
-    "-b:a", options.audioBitrate || "160k",
+    ...audioOutputArgs(options.audioBitrate),
     "-movflags", "+faststart",
     outputPath
   ];

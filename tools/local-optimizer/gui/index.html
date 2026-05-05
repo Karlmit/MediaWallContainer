@@ -71,8 +71,13 @@
             </select>
           </label>
           <label>
-            <span>Audio bitrate</span>
-            <input id="audioBitrate" value="128k">
+            <span>Audio</span>
+            <select id="audioBitrate">
+              <option value="0" selected>Strip audio</option>
+              <option value="96k">96k AAC</option>
+              <option value="128k">128k AAC</option>
+              <option value="160k">160k AAC</option>
+            </select>
           </label>
           <label>
             <span>Concurrent jobs</span>

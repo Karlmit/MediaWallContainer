@@ -344,6 +344,15 @@ function shouldOptimize(probe, settings) {
   return false;
 }
 
+function shouldStripAudio(audioBitrate) {
+  return ["0", "none", "false", "off", "no"].includes(String(audioBitrate || "").toLowerCase());
+}
+
+function audioOutputArgs(audioBitrate) {
+  if (shouldStripAudio(audioBitrate)) return ["-an"];
+  return ["-map", "0:a:0?", "-c:a", "aac", "-b:a", audioBitrate || "128k"];
+}
+
 function ffmpegArgs(inputPath, outputPath, probe, settings) {
   const downscale = Boolean(probe.height && probe.height > settings.maxHeight);
 
@@ -356,9 +365,7 @@ function ffmpegArgs(inputPath, outputPath, probe, settings) {
     "-i",
     inputPath,
     "-map",
-    "0:v:0",
-    "-map",
-    "0:a:0?"
+    "0:v:0"
   ];
 
   if (downscale) {
@@ -378,10 +385,7 @@ function ffmpegArgs(inputPath, outputPath, probe, settings) {
     "0",
     "-pix_fmt",
     "yuv420p",
-    "-c:a",
-    "aac",
-    "-b:a",
-    settings.audioBitrate,
+    ...audioOutputArgs(settings.audioBitrate),
     "-movflags",
     "+faststart",
     outputPath
@@ -496,6 +500,7 @@ async function main() {
     console.log("  --quality 24");
     console.log("  --nvenc-preset p5");
     console.log("  --audio-bitrate 128k");
+    console.log("  --audio-bitrate 0  # strip audio");
     console.log("  --concurrency 2");
     console.log("  --limit 500");
     console.log("  --compose-media-path /mnt/user/Media");
@@ -615,7 +620,8 @@ async function main() {
         entry?.status === "ready" &&
         entry.sourceSignature === signature &&
         entry.maxHeight === maxHeight &&
-        entry.crf === quality
+        entry.crf === quality &&
+        entry.audioBitrate === audioBitrate
       ) {
         try {
           await fs.access(path.join(outputRoot, entry.cacheFile));
@@ -662,6 +668,7 @@ async function main() {
         status: "transcoding",
         maxHeight,
         crf: quality,
+        audioBitrate,
         updatedAt: new Date().toISOString()
       };
 

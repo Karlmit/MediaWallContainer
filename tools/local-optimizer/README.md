@@ -74,6 +74,9 @@ OPTIMIZE_VIDEOS: "needed"
 OPTIMIZE_MAX_HEIGHT: "720"
 OPTIMIZE_CRF: "24"
 OPTIMIZE_MIN_BITRATE_MBPS: "8"
+OPTIMIZE_AUDIO_BITRATE: "0"
 ```
 
 If the local optimizer used `nvenc`, the Docker server can still use `vaapi` or `software` later for new files. The important matching settings are `OPTIMIZE_MAX_HEIGHT` and `OPTIMIZE_CRF`, because MediaWall uses those when deciding whether an optimized cache entry is reusable. Docker defaults `OPTIMIZE_CRF` to `24`, so either leave the optimizer quality at `24` or add the matching `OPTIMIZE_CRF` value to compose.
+
+Set audio bitrate to `0` to strip audio from optimized copies.
