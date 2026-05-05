@@ -10,7 +10,9 @@ const debugChooseFolderButton = document.querySelector("#debugChooseFolderButton
 const pauseButton = document.querySelector("#pauseButton");
 const fullscreenButton = document.querySelector("#fullscreenButton");
 const refreshButton = document.querySelector("#refreshButton");
+const loadingState = document.querySelector("#loadingState");
 const statusSplash = document.querySelector("#statusSplash");
+const itemCountSplash = document.querySelector("#itemCountSplash");
 const subfolderList = document.querySelector("#subfolderList");
 const diagnosticsPanel = document.querySelector("#diagnosticsPanel");
 const diagnosticsCloseButton = document.querySelector("#diagnosticsCloseButton");
@@ -53,6 +55,7 @@ const state = {
   swapTimer: null,
   refreshTimer: null,
   statusSplashTimer: null,
+  itemCountSplashTimer: null,
   videoWatchTimer: null,
   diagnosticsTimer: null,
   activeVideoLoads: 0,
@@ -288,6 +291,9 @@ function cancelVideoLoad(tile) {
   if (!video) return;
   state.videoLoadQueue = state.videoLoadQueue.filter((queued) => queued.media !== video);
   releaseVideoLoadSlot(video);
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
 }
 
 function readyStateLabel(video) {
@@ -329,6 +335,8 @@ function updateVideoDebug(tile, item, video) {
   const queueText = host === "web" && video.dataset.loadQueued === "true"
     ? `web load queue ${queueIndex >= 0 ? queueIndex + 1 : "-"} / ${state.videoLoadQueue.length}`
     : host === "web" ? `web active loads ${state.activeVideoLoads}/${WEB_VIDEO_LOAD_LIMIT}` : "desktop direct file";
+  const loadFlags = `started=${video.dataset.loadStarted === "true"} released=${video.dataset.loadReleased === "true"} hasSrc=${Boolean(video.currentSrc || video.src)}`;
+  const errorText = video.error ? `error=${video.error.code}` : "error=none";
   const waiting = tile.classList.contains("loading") ? "loading spinner on" : "playing/ready";
   const current = Number.isFinite(video.currentTime) ? `${video.currentTime.toFixed(1)}s` : "0s";
   const duration = Number.isFinite(video.duration) ? `${video.duration.toFixed(1)}s` : "unknown";
@@ -338,7 +346,9 @@ function updateVideoDebug(tile, item, video) {
   overlay.textContent = [
     `${waiting} | ${source}`,
     queueText,
+    loadFlags,
     `ready=${readyStateLabel(video)} network=${networkStateLabel(video)} ${paused}${stalled}`,
+    errorText,
     `${bufferedVideoText(video)}`,
     `time ${current} / ${duration}`,
     item.path
@@ -359,7 +369,11 @@ function createTile(item) {
   tile.dataset.id = item.id;
   tile.style.setProperty("--fade-duration", `${settings().fadeMs}ms`);
 
-  const markReady = () => tile.classList.remove("loading");
+  const markReady = () => {
+    tile.classList.remove("loading");
+    updateLoadingState();
+    layout();
+  };
 
   const media = document.createElement(item.type === "video" ? "video" : "img");
   media.draggable = false;
@@ -388,6 +402,8 @@ function createTile(item) {
         tile.classList.add("failed");
         releaseVideoLoadSlot(media);
         updateVideoDebug(tile, item, media);
+        updateLoadingState();
+        layout();
         return;
       }
       tile.classList.add("loading");
@@ -451,6 +467,8 @@ function createTile(item) {
     media.addEventListener("error", () => {
       tile.classList.remove("loading");
       tile.classList.add("failed");
+      updateLoadingState();
+      layout();
     }, { once: true });
   }
 
@@ -483,6 +501,7 @@ function syncTiles() {
     state.tiles.delete(id);
     setTimeout(() => tile.remove(), settings().fadeMs + 80);
   }
+  updateLoadingState();
 }
 
 function ensureVideoPlayback() {
@@ -652,6 +671,33 @@ function scoreLayout(rects, width, height) {
   return screenFill * 0.65 + mediaDensity * 0.35;
 }
 
+function shouldLayoutTile(tile) {
+  if (!tile) return false;
+  if (tile.classList.contains("loading") && !controls.videoDebug.checked) return false;
+  return !tile.classList.contains("fading");
+}
+
+function layoutItems() {
+  return state.active.filter((item) => shouldLayoutTile(state.tiles.get(item.id)));
+}
+
+function activeLoadingCount() {
+  let count = 0;
+  for (const item of state.active) {
+    const tile = state.tiles.get(item.id);
+    if (tile?.classList.contains("loading")) count += 1;
+  }
+  return count;
+}
+
+function updateLoadingState() {
+  const loadingCount = activeLoadingCount();
+  const visibleCount = layoutItems().length;
+  const show = state.active.length > 0 && visibleCount === 0 && loadingCount > 0 && !controls.videoDebug.checked;
+  loadingState.classList.toggle("hidden", !show);
+  if (show) loadingState.textContent = `Loading ${loadingCount} item${loadingCount === 1 ? "" : "s"}`;
+}
+
 function solveLayout(items, width, height, averageSize, orientation) {
   const sorted = [...items].sort((a, b) => {
     const ratioA = getRatio(a);
@@ -707,9 +753,12 @@ function calculateLayout(items, width, height, averageSize) {
 function layout() {
   if (!state.active.length) return;
   const { averageSize, fadeMs, cropMedia } = settings();
-  const rects = calculateLayout(state.active, window.innerWidth, window.innerHeight, averageSize);
+  const items = layoutItems();
+  updateLoadingState();
+  if (!items.length) return;
+  const rects = calculateLayout(items, window.innerWidth, window.innerHeight, averageSize);
 
-  for (const item of state.active) {
+  for (const item of items) {
     const tile = state.tiles.get(item.id);
     const rect = rects.get(item.id);
     if (!tile || !rect) continue;
@@ -833,6 +882,20 @@ function showStatusSplash(message) {
   }, 1150);
 }
 
+function showItemCountSplash() {
+  clearTimeout(state.itemCountSplashTimer);
+  itemCountSplash.textContent = `${controls.itemCount.value} item${Number(controls.itemCount.value) === 1 ? "" : "s"}`;
+  itemCountSplash.classList.remove("visible");
+
+  requestAnimationFrame(() => {
+    itemCountSplash.classList.add("visible");
+  });
+
+  state.itemCountSplashTimer = setTimeout(() => {
+    itemCountSplash.classList.remove("visible");
+  }, 900);
+}
+
 function togglePause() {
   state.paused = !state.paused;
   updatePauseButton();
@@ -846,6 +909,7 @@ function changeItemCount(delta) {
   const max = Number(controls.itemCount.max) || 200;
   const current = Number(controls.itemCount.value) || min;
   controls.itemCount.value = String(clamp(current + delta, min, max));
+  showItemCountSplash();
   saveSettings();
   reconcileItemCount();
 }
@@ -1310,6 +1374,8 @@ for (const input of Object.values(controls)) {
     if (input === controls.videoDebug) {
       refreshVideoDebug();
       processVideoLoadQueue();
+      updateLoadingState();
+      layout();
       return;
     }
     reconcileItemCount();
