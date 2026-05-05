@@ -1,7 +1,7 @@
 package com.kwa.mediawall
 
 import android.app.Activity
-import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.net.Uri
@@ -86,6 +86,14 @@ class MainActivity : Activity() {
         if (hasFocus) hideSystemUi()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        hideSystemUi()
+        if (!menuVisible && activeMedia.isNotEmpty()) {
+            mainHandler.post { renderWall() }
+        }
+    }
+
     private fun hideSystemUi() {
         window.decorView.windowInsetsController?.let {
             it.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
@@ -140,7 +148,6 @@ class MainActivity : Activity() {
     }
 
     private fun showPinScreen() {
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
         menuVisible = true
         wall.removeAllViews()
         showOverlay(panel("Unlock MediaWall").apply {
@@ -159,7 +166,6 @@ class MainActivity : Activity() {
     }
 
     private fun showSetupScreen() {
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
         menuVisible = true
         wall.removeAllViews()
         val panel = panel("MediaWall Android")
@@ -266,7 +272,6 @@ class MainActivity : Activity() {
     }
 
     private fun connectAndLoad() {
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         showCenter("Connecting")
         executor.execute {
             try {
