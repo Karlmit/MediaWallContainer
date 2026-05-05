@@ -4,8 +4,9 @@ Media Wall is a fullscreen media collage for images and videos. This repository 
 
 - **Docker web app** for servers such as Unraid.
 - **Windows desktop app** for local folder picking and fullscreen playback.
+- **Android app** for connecting to a Docker MediaWall instance from an Android device.
 
-Both versions use the same shared wall UI, so feature updates should land in both unless the feature is host-specific.
+The Docker and Windows versions use the same shared wall UI. The Android app is a native client for the Docker instance, so shared feature updates should still be mirrored where the host allows it.
 
 ## Features
 
@@ -35,6 +36,30 @@ https://github.com/Karlmit/MediaWall/releases
 Extract the zip and run `Media Wall.exe`.
 
 The desktop app asks you to choose a folder the first time it opens. It remembers the last folder, watches it for changes, and uses the same wall controls as the Docker version. This is the easiest install if you just want to run MediaWall directly on a Windows machine without hosting it on a server.
+
+## Android App
+
+The Android project lives in `Android Studio/` and can be opened directly in Android Studio.
+
+Current Android features:
+
+- Connects to a Docker MediaWall instance by `http://` or `https://` URL.
+- Uses the Docker password login when configured.
+- Shows the same media library from `/api/media`.
+- Plays images and videos in a fullscreen wall.
+- Drag up/down on the screen to increase or decrease the visible item count.
+- Optional PIN lock before opening the app.
+- Optional private optimized-video cache stored in the app's internal storage, so cached videos do not appear in the normal device file browser.
+- Cache can be cleared from the Android settings panel.
+
+Build a debug APK from the project root:
+
+```powershell
+cd "Android Studio"
+.\gradlew.bat :app:assembleDebug
+```
+
+The debug APK is written to `Android Studio/app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Unraid Compose
 

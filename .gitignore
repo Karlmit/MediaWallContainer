@@ -4,3 +4,8 @@ out/
 dist-latest/
 Media-Wall-New/
 npm-debug.log*
+Android Studio/.gradle/
+Android Studio/.idea/
+Android Studio/local.properties
+Android Studio/gradle/gradle-daemon-jvm.properties
+Android Studio/**/build/
