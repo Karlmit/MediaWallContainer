@@ -223,34 +223,31 @@ class MainActivity : Activity() {
                     append(if (offlineMode) "Offline mode" else "Online mode")
                     append("\n")
                     append("${allMedia.size} media items")
+                    append("\n")
+                    append("$itemCount visible item${if (itemCount == 1) "" else "s"}")
                     if (serverUrl.isNotBlank()) append("\n$serverUrl")
                 }
                 setTextColor(Color.rgb(166, 167, 173))
                 textSize = 14f
                 setPadding(0, 0, 0, 14)
             })
-            addView(button("Connection settings") { showSetupScreen() })
-            addView(button(if (randomPaused) "Resume randomness" else "Pause randomness") {
+            addView(button(if (randomPaused) "Resume random swaps" else "Pause random swaps") {
                 randomPaused = !randomPaused
                 if (randomPaused) {
                     mainHandler.removeCallbacks(randomSwapRunnable)
-                    toast("Randomness paused")
+                    toast("Random swaps paused")
                 } else {
                     scheduleRandomSwap()
-                    toast("Randomness resumed")
+                    toast("Random swaps resumed")
                 }
                 showMainMenu()
             })
-            addView(button("Download all optimized videos") {
-                downloadAllOptimizedVideos()
-                showDownloadStatusScreen()
-            })
-            addView(button("Download status") { showDownloadStatusScreen() })
-            addView(button("Reconnect") {
+            addView(button("Refresh media") {
                 clearOverlay()
                 menuVisible = false
                 connectAndLoad()
             })
+            addView(button("Download status") { showDownloadStatusScreen() })
             addView(button("Open offline") {
                 clearOverlay()
                 menuVisible = false
@@ -259,6 +256,8 @@ class MainActivity : Activity() {
                     showMainMenu()
                 }
             })
+            addView(button("Connection settings") { showConnectionSettingsScreen() })
+            addView(button("Android settings") { showAndroidSettingsScreen() })
             addView(button("Close menu") {
                 clearOverlay()
                 menuVisible = false
@@ -271,9 +270,9 @@ class MainActivity : Activity() {
         })
     }
 
-    private fun showSetupScreen() {
+    private fun showConnectionSettingsScreen() {
         menuVisible = true
-        overlayScreen = "setup"
+        overlayScreen = "connection"
         val panel = panel("Connection settings")
         val urlInput = input("Docker URL, for example http://192.168.1.10:3060", false).apply {
             setText(serverUrl)
@@ -281,6 +280,27 @@ class MainActivity : Activity() {
         val passwordInput = input("Docker password", true).apply {
             setText(password)
         }
+        panel.addView(urlInput)
+        panel.addView(passwordInput)
+        panel.addView(button("Connect") {
+            serverUrl = normalizeServerUrl(urlInput.text.toString())
+            password = passwordInput.text.toString()
+            prefs.edit()
+                .putString("serverUrl", serverUrl)
+                .putString("password", password)
+                .apply()
+            clearOverlay()
+            menuVisible = false
+            connectAndLoad()
+        })
+        panel.addView(button("Back to menu") { showMainMenu() })
+        showOverlay(panel)
+    }
+
+    private fun showAndroidSettingsScreen() {
+        menuVisible = true
+        overlayScreen = "settings"
+        val panel = panel("Android settings")
         val cacheToggle = CheckBox(this).apply {
             text = "Download optimized videos into private app storage"
             setTextColor(Color.WHITE)
@@ -294,27 +314,20 @@ class MainActivity : Activity() {
         val pinInput = numericPinInput("PIN").apply {
             setText(pinCode)
         }
-        panel.addView(urlInput)
-        panel.addView(passwordInput)
         panel.addView(cacheToggle)
         panel.addView(pinToggle)
         panel.addView(pinInput)
-        panel.addView(button("Connect") {
-            serverUrl = normalizeServerUrl(urlInput.text.toString())
-            password = passwordInput.text.toString()
+        panel.addView(button("Save settings") {
             localOptimizedCache = cacheToggle.isChecked
             pinEnabled = pinToggle.isChecked
             pinCode = pinInput.text.toString()
             prefs.edit()
-                .putString("serverUrl", serverUrl)
-                .putString("password", password)
                 .putBoolean("localOptimizedCache", localOptimizedCache)
                 .putBoolean("pinEnabled", pinEnabled)
                 .putString("pinCode", pinCode)
                 .apply()
-            clearOverlay()
-            menuVisible = false
-            connectAndLoad()
+            toast("Settings saved")
+            showMainMenu()
         })
         panel.addView(button("Back to menu") { showMainMenu() })
         showOverlay(panel)
