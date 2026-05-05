@@ -33,11 +33,13 @@ import java.net.URL
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.Executors
-import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.random.Random
+
+private const val MAX_ANDROID_ITEMS = 15
+private const val RANDOM_SWAP_MS = 15_000L
 
 class MainActivity : Activity() {
     private val executor = Executors.newFixedThreadPool(6)
@@ -64,6 +66,20 @@ class MainActivity : Activity() {
     private var touchChangedItemCount = false
     private var menuVisible = false
     private var offlineMode = false
+    private var randomPaused = false
+    private var overlayScreen = ""
+    private var downloadAllInProgress = false
+    private var downloadStatusText = "Idle"
+    private var downloadTotal = 0
+    private var downloadDone = 0
+    private var downloadFailed = 0
+    private var downloadCurrent = ""
+    private val randomSwapRunnable = object : Runnable {
+        override fun run() {
+            if (!randomPaused && !menuVisible) replaceRandomItem()
+            scheduleRandomSwap()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,7 +88,7 @@ class MainActivity : Activity() {
         prefs = getSharedPreferences("mediawall", MODE_PRIVATE)
         serverUrl = prefs.getString("serverUrl", "") ?: ""
         password = prefs.getString("password", "") ?: ""
-        itemCount = prefs.getInt("itemCount", 6)
+        itemCount = prefs.getInt("itemCount", 6).coerceIn(1, MAX_ANDROID_ITEMS)
         localOptimizedCache = prefs.getBoolean("localOptimizedCache", false)
         pinEnabled = prefs.getBoolean("pinEnabled", false)
         pinCode = prefs.getString("pinCode", "") ?: ""
@@ -97,6 +113,11 @@ class MainActivity : Activity() {
         if (!menuVisible && activeMedia.isNotEmpty()) {
             mainHandler.post { renderWall() }
         }
+    }
+
+    override fun onDestroy() {
+        mainHandler.removeCallbacks(randomSwapRunnable)
+        super.onDestroy()
     }
 
     private fun hideSystemUi() {
@@ -163,8 +184,19 @@ class MainActivity : Activity() {
         return true
     }
 
+    private fun handleTileTouch(event: MotionEvent, itemId: String): Boolean {
+        val handled = handleWallTouch(event)
+        if (event.actionMasked == MotionEvent.ACTION_UP) {
+            val dy = kotlin.math.abs(event.y - touchStartY)
+            val quickEnough = System.currentTimeMillis() - touchStartTime < 900
+            if (!touchChangedItemCount && quickEnough && dy < 35) replaceItem(itemId)
+        }
+        return handled
+    }
+
     private fun showPinScreen() {
         menuVisible = true
+        overlayScreen = "pin"
         wall.removeAllViews()
         showOverlay(panel("Unlock MediaWall").apply {
             val pinInput = numericPinInput("PIN")
@@ -183,6 +215,7 @@ class MainActivity : Activity() {
 
     private fun showMainMenu() {
         menuVisible = true
+        overlayScreen = "main"
         showOverlay(panel("MediaWall").apply {
             addView(TextView(context).apply {
                 text = buildString {
@@ -196,6 +229,21 @@ class MainActivity : Activity() {
                 setPadding(0, 0, 0, 14)
             })
             addView(button("Connection settings") { showSetupScreen() })
+            addView(button(if (randomPaused) "Resume randomness" else "Pause randomness") {
+                randomPaused = !randomPaused
+                if (randomPaused) {
+                    mainHandler.removeCallbacks(randomSwapRunnable)
+                    toast("Randomness paused")
+                } else {
+                    scheduleRandomSwap()
+                    toast("Randomness resumed")
+                }
+                showMainMenu()
+            })
+            addView(button("Download all optimized videos") {
+                downloadAllOptimizedVideos()
+                showDownloadStatusScreen()
+            })
             addView(button("Download status") { showDownloadStatusScreen() })
             addView(button("Reconnect") {
                 clearOverlay()
@@ -217,12 +265,14 @@ class MainActivity : Activity() {
                     activeMedia = pickActiveMedia()
                     renderWall()
                 }
+                scheduleRandomSwap()
             })
         })
     }
 
     private fun showSetupScreen() {
         menuVisible = true
+        overlayScreen = "setup"
         val panel = panel("Connection settings")
         val urlInput = input("Docker URL, for example http://192.168.1.10:3060", false).apply {
             setText(serverUrl)
@@ -271,22 +321,37 @@ class MainActivity : Activity() {
 
     private fun showDownloadStatusScreen() {
         menuVisible = true
+        overlayScreen = "downloads"
         showOverlay(panel("Download status").apply {
             val stats = cacheStats()
             addView(TextView(context).apply {
                 text = buildString {
-                    append("Private video cache\n")
-                    append("${stats.cachedVideos} / ${stats.knownVideos} known videos cached\n")
+                    append("Status: $downloadStatusText\n")
+                    if (downloadCurrent.isNotBlank()) append("Current: $downloadCurrent\n")
+                    if (downloadTotal > 0) append("Progress: $downloadDone / $downloadTotal, failed $downloadFailed\n")
+                    append("\n")
+                    append("Optimized video cache\n")
+                    append("${stats.cachedVideos} / ${stats.knownVideos} optimized videos cached\n")
                     append("${formatBytes(stats.bytes)} stored in app-private storage\n")
                     append("\n")
+                    append("Only /optimized videos are downloaded. Originals and fallback streams are not saved locally.\n")
                     append("Cached files are inside Android app storage and should not appear in the normal device file browser.")
                 }
                 setTextColor(Color.WHITE)
                 textSize = 15f
                 setPadding(0, 0, 0, 16)
             })
+            addView(button("Download all optimized videos") {
+                downloadAllOptimizedVideos()
+                showDownloadStatusScreen()
+            })
             addView(button("Clear private video cache") {
                 File(filesDir, "optimized").deleteRecursively()
+                downloadStatusText = "Private optimized cache cleared"
+                downloadCurrent = ""
+                downloadTotal = 0
+                downloadDone = 0
+                downloadFailed = 0
                 toast("Private cache cleared")
                 showDownloadStatusScreen()
             })
@@ -377,6 +442,7 @@ class MainActivity : Activity() {
                     allMedia = loaded.media
                     activeMedia = pickActiveMedia()
                     renderWall()
+                    scheduleRandomSwap()
                     prefs.edit().putString("lastMediaJson", loaded.rawJson).apply()
                     showCenter("Loaded ${allMedia.size} items", 900)
                 }
@@ -428,7 +494,9 @@ class MainActivity : Activity() {
                 path = obj.optString("path", obj.getString("id")),
                 url = absoluteUrl(obj.getString("url")),
                 optimizedUrl = obj.optString("optimizedUrl").takeIf { it.isNotBlank() && it != "null" }?.let(::absoluteUrl),
-                fallbackUrl = obj.optString("fallbackUrl").takeIf { it.isNotBlank() && it != "null" }?.let(::absoluteUrl)
+                fallbackUrl = obj.optString("fallbackUrl").takeIf { it.isNotBlank() && it != "null" }?.let(::absoluteUrl),
+                sourceWidth = obj.optInt("sourceWidth").takeIf { it > 0 },
+                sourceHeight = obj.optInt("sourceHeight").takeIf { it > 0 }
             )
         }
     }
@@ -439,13 +507,14 @@ class MainActivity : Activity() {
             val result = JSONObject(savedJson)
             val media = parseMediaArray(result.optJSONArray("media") ?: JSONArray())
             val cached = media.filter { item ->
-                item.type == "video" && localVideoFile(item).exists()
+                item.type == "video" && localOptimizedFile(item)?.exists() == true
             }
             if (cached.isEmpty()) return false
             offlineMode = true
             allMedia = cached
             activeMedia = pickActiveMedia()
             renderWall()
+            scheduleRandomSwap()
             true
         } catch (_: Exception) {
             false
@@ -488,7 +557,7 @@ class MainActivity : Activity() {
 
     private fun pickActiveMedia(): List<MediaItem> {
         if (allMedia.isEmpty()) return emptyList()
-        return allMedia.shuffled().take(min(itemCount, allMedia.size))
+        return allMedia.shuffled().take(minOf(itemCount, MAX_ANDROID_ITEMS, allMedia.size))
     }
 
     private fun renderWall() {
@@ -497,9 +566,12 @@ class MainActivity : Activity() {
             showCenter("No media found")
             return
         }
-        layoutTiles(activeMedia.size).forEachIndexed { index, rect ->
+        layoutTiles(activeMedia).forEachIndexed { index, rect ->
             val item = activeMedia[index]
-            val tile = FrameLayout(this).apply { setBackgroundColor(Color.rgb(17, 18, 23)) }
+            val tile = FrameLayout(this).apply {
+                setBackgroundColor(Color.rgb(17, 18, 23))
+                setOnTouchListener { _, event -> handleTileTouch(event, item.id) }
+            }
             val progress = ProgressBar(this)
             tile.addView(progress, FrameLayout.LayoutParams(56, 56, Gravity.CENTER))
             wall.addView(tile, FrameLayout.LayoutParams(rect.width, rect.height).apply {
@@ -510,21 +582,75 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun layoutTiles(count: Int): List<TileRect> {
+    private fun layoutTiles(items: List<MediaItem>): List<TileRect> {
         val width = resources.displayMetrics.widthPixels
         val height = resources.displayMetrics.heightPixels
+        val count = items.size
         if (count == 1) {
-            val itemWidth = (width * 0.92).roundToInt()
-            val itemHeight = (height * 0.92).roundToInt()
-            return listOf(TileRect((width - itemWidth) / 2, (height - itemHeight) / 2, itemWidth, itemHeight))
+            val ratio = items.first().aspectRatio()
+            val maxWidth = width * 0.94
+            val maxHeight = height * 0.94
+            var itemWidth = maxWidth
+            var itemHeight = itemWidth / ratio
+            if (itemHeight > maxHeight) {
+                itemHeight = maxHeight
+                itemWidth = itemHeight * ratio
+            }
+            val tileWidth = itemWidth.roundToInt()
+            val tileHeight = itemHeight.roundToInt()
+            return listOf(TileRect((width - tileWidth) / 2, (height - tileHeight) / 2, tileWidth, tileHeight))
         }
-        val columns = ceil(kotlin.math.sqrt(count.toDouble() * width / max(1, height))).roundToInt().coerceAtLeast(1)
-        val rows = ceil(count.toDouble() / columns).roundToInt().coerceAtLeast(1)
-        val tileWidth = width / columns
-        val tileHeight = height / rows
-        return List(count) { index ->
-            TileRect((index % columns) * tileWidth, (index / columns) * tileHeight, tileWidth, tileHeight)
+        var best = packRows(items, width, height, 0.7)
+        var low = 0.2
+        var high = 1.6
+        repeat(18) {
+            val mid = (low + high) / 2.0
+            val candidate = packRows(items, width, height, mid)
+            val bottom = candidate.maxOfOrNull { it.y + it.height } ?: 0
+            if (bottom <= height) {
+                best = candidate
+                low = mid
+            } else {
+                high = mid
+            }
         }
+        val bottom = best.maxOfOrNull { it.y + it.height } ?: 0
+        val offsetY = max(0, (height - bottom) / 2)
+        return best.map { it.copy(y = it.y + offsetY) }
+    }
+
+    private fun packRows(items: List<MediaItem>, width: Int, height: Int, scale: Double): List<TileRect> {
+        val targetArea = (width.toDouble() * height.toDouble() / max(1, items.size)) * scale
+        val boxes = items.map { item ->
+            val ratio = item.aspectRatio()
+            val boxWidth = kotlin.math.sqrt(targetArea * ratio)
+            val boxHeight = boxWidth / ratio
+            Box(boxWidth, boxHeight)
+        }
+        val rects = mutableListOf<TileRect>()
+        var index = 0
+        var y = 0
+        while (index < boxes.size) {
+            val rowStart = index
+            var rowWidth = 0.0
+            var rowHeight = 0.0
+            while (index < boxes.size && (rowWidth + boxes[index].width <= width || index == rowStart)) {
+                rowWidth += boxes[index].width
+                rowHeight = max(rowHeight, boxes[index].height)
+                index++
+            }
+            val rowScale = if (rowWidth > 0) min(1.0, width / rowWidth) else 1.0
+            val scaledHeight = (rowHeight * rowScale).roundToInt().coerceAtLeast(1)
+            var x = ((width - rowWidth * rowScale) / 2.0).roundToInt().coerceAtLeast(0)
+            for (rowIndex in rowStart until index) {
+                val box = boxes[rowIndex]
+                val rectWidth = (box.width * rowScale).roundToInt().coerceAtLeast(1)
+                rects.add(TileRect(x, y, rectWidth, scaledHeight))
+                x += rectWidth
+            }
+            y += scaledHeight
+        }
+        return rects
     }
 
     private fun loadTile(tile: FrameLayout, progress: ProgressBar, item: MediaItem) {
@@ -537,6 +663,7 @@ class MainActivity : Activity() {
                         tile.addView(ImageView(this).apply {
                             scaleType = ImageView.ScaleType.CENTER_CROP
                             setImageBitmap(bitmap)
+                            setOnTouchListener { _, event -> handleTileTouch(event, item.id) }
                         }, FrameLayout.LayoutParams(-1, -1))
                     }
                 } catch (_: Exception) {
@@ -548,7 +675,7 @@ class MainActivity : Activity() {
 
         executor.execute {
             val playbackUrl = if (offlineMode) {
-                localVideoFile(item).toURI().toString()
+                localOptimizedFile(item)?.toURI()?.toString() ?: item.bestRemoteVideoUrl()
             } else if (localOptimizedCache) {
                 cachedVideoUrl(item)
             } else {
@@ -557,6 +684,7 @@ class MainActivity : Activity() {
             mainHandler.post {
                 tile.removeView(progress)
                 tile.addView(VideoView(this).apply {
+                    setOnTouchListener { _, event -> handleTileTouch(event, item.id) }
                     setVideoURI(Uri.parse(playbackUrl))
                     setOnPreparedListener { player ->
                         player.isLooping = true
@@ -574,25 +702,132 @@ class MainActivity : Activity() {
     }
 
     private fun cachedVideoUrl(item: MediaItem): String {
-        val sourceUrl = item.bestRemoteVideoUrl()
-        val cacheFile = localVideoFile(item)
+        val sourceUrl = item.optimizedUrl ?: return item.bestRemoteVideoUrl()
+        val cacheFile = localOptimizedFile(item) ?: return item.bestRemoteVideoUrl()
         if (cacheFile.exists() && cacheFile.length() > 0) return cacheFile.toURI().toString()
-        showCenter("Downloading private optimized video", 900)
-        val connection = open(sourceUrl)
-        connection.inputStream.use { input ->
-            FileOutputStream(cacheFile).use { output -> input.copyTo(output) }
-        }
+        downloadOptimizedVideo(item, sourceUrl, cacheFile)
         return cacheFile.toURI().toString()
     }
 
-    private fun localVideoFile(item: MediaItem): File {
-        val sourceUrl = item.bestRemoteVideoUrl()
+    private fun localOptimizedFile(item: MediaItem): File? {
+        val sourceUrl = item.optimizedUrl ?: return null
         val cacheDir = File(filesDir, "optimized").apply { mkdirs() }
         return File(cacheDir, "${sha256(sourceUrl)}.mp4")
     }
 
     private fun MediaItem.bestRemoteVideoUrl(): String {
         return optimizedUrl ?: fallbackUrl ?: url
+    }
+
+    private fun MediaItem.aspectRatio(): Double {
+        val width = sourceWidth ?: 0
+        val height = sourceHeight ?: 0
+        if (width > 0 && height > 0) return (width.toDouble() / height.toDouble()).coerceIn(0.25, 4.0)
+        return if (type == "video") 16.0 / 9.0 else 1.0
+    }
+
+    private fun replaceRandomItem() {
+        if (activeMedia.isEmpty()) return
+        if (allMedia.size <= activeMedia.size) return
+        replaceItem(activeMedia[Random.nextInt(activeMedia.size)].id)
+    }
+
+    private fun replaceItem(itemId: String) {
+        val index = activeMedia.indexOfFirst { it.id == itemId }
+        if (index < 0) return
+        val activeIds = activeMedia.mapTo(mutableSetOf()) { it.id }
+        val candidates = allMedia.filter { it.id !in activeIds }
+        if (candidates.isEmpty()) return
+        activeMedia = activeMedia.toMutableList().also { it[index] = candidates.random() }
+        renderWall()
+    }
+
+    private fun scheduleRandomSwap() {
+        mainHandler.removeCallbacks(randomSwapRunnable)
+        if (!randomPaused && activeMedia.isNotEmpty()) {
+            mainHandler.postDelayed(randomSwapRunnable, RANDOM_SWAP_MS)
+        }
+    }
+
+    private fun downloadAllOptimizedVideos() {
+        if (downloadAllInProgress) {
+            toast("Optimized download already running")
+            return
+        }
+        val media = mediaForStats()
+        val targets = media.filter { item ->
+            item.type == "video" &&
+                item.optimizedUrl != null &&
+                localOptimizedFile(item)?.let { !it.exists() || it.length() <= 0 } == true
+        }
+        downloadTotal = targets.size
+        downloadDone = 0
+        downloadFailed = 0
+        downloadCurrent = ""
+        if (targets.isEmpty()) {
+            downloadStatusText = "All optimized videos are already cached"
+            toast(downloadStatusText)
+            return
+        }
+        downloadAllInProgress = true
+        downloadStatusText = "Downloading optimized videos"
+        showCenter("Downloading $downloadTotal optimized videos", 1400)
+        executor.execute {
+            targets.forEach { item ->
+                val sourceUrl = item.optimizedUrl
+                val targetFile = localOptimizedFile(item)
+                if (sourceUrl == null || targetFile == null) return@forEach
+                mainHandler.post {
+                    downloadCurrent = item.path
+                    downloadStatusText = "Downloading optimized videos"
+                    refreshDownloadStatusIfOpen()
+                }
+                try {
+                    downloadOptimizedVideo(item, sourceUrl, targetFile)
+                    mainHandler.post {
+                        downloadDone++
+                        refreshDownloadStatusIfOpen()
+                    }
+                } catch (_: Exception) {
+                    targetFile.delete()
+                    mainHandler.post {
+                        downloadFailed++
+                        refreshDownloadStatusIfOpen()
+                    }
+                }
+            }
+            mainHandler.post {
+                downloadAllInProgress = false
+                downloadCurrent = ""
+                downloadStatusText = if (downloadFailed == 0) {
+                    "Finished downloading optimized videos"
+                } else {
+                    "Finished with $downloadFailed failed downloads"
+                }
+                showCenter(downloadStatusText, 1800)
+                refreshDownloadStatusIfOpen()
+            }
+        }
+    }
+
+    private fun refreshDownloadStatusIfOpen() {
+        if (overlayScreen == "downloads" && menuVisible) showDownloadStatusScreen()
+    }
+
+    private fun downloadOptimizedVideo(item: MediaItem, sourceUrl: String, cacheFile: File) {
+        showCenter("Downloading ${item.name}", 900)
+        cacheFile.parentFile?.mkdirs()
+        val tempFile = File(cacheFile.parentFile, "${cacheFile.name}.part")
+        tempFile.delete()
+        val connection = open(sourceUrl)
+        connection.inputStream.use { input ->
+            FileOutputStream(tempFile).use { output -> input.copyTo(output) }
+        }
+        if (cacheFile.exists()) cacheFile.delete()
+        if (!tempFile.renameTo(cacheFile)) {
+            tempFile.copyTo(cacheFile, overwrite = true)
+            tempFile.delete()
+        }
     }
 
     private fun tileFailed(tile: FrameLayout, progress: ProgressBar?) {
@@ -605,11 +840,13 @@ class MainActivity : Activity() {
     }
 
     private fun changeItemCount(delta: Int) {
-        itemCount = (itemCount + delta).coerceIn(1, max(1, allMedia.size))
+        val maxItems = minOf(MAX_ANDROID_ITEMS, max(1, allMedia.size))
+        itemCount = (itemCount + delta).coerceIn(1, maxItems)
         prefs.edit().putInt("itemCount", itemCount).apply()
         activeMedia = pickActiveMedia()
         renderWall()
         showCenter("$itemCount item${if (itemCount == 1) "" else "s"}", 900)
+        scheduleRandomSwap()
     }
 
     private fun showCenter(message: String, durationMs: Long = 0) {
@@ -635,7 +872,16 @@ class MainActivity : Activity() {
     }
 
     private fun cacheStats(): CacheStats {
-        val mediaForStats = allMedia.takeIf { it.isNotEmpty() } ?: run {
+        val mediaForStats = mediaForStats()
+        val knownVideos = mediaForStats.count { it.type == "video" && it.optimizedUrl != null }
+        val cachedVideos = mediaForStats.count { it.type == "video" && localOptimizedFile(it)?.exists() == true }
+        val cacheDir = File(filesDir, "optimized")
+        val bytes = cacheDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        return CacheStats(knownVideos, cachedVideos, bytes)
+    }
+
+    private fun mediaForStats(): List<MediaItem> {
+        return allMedia.takeIf { it.isNotEmpty() } ?: run {
             val savedJson = prefs.getString("lastMediaJson", null) ?: ""
             try {
                 parseMediaArray(JSONObject(savedJson).optJSONArray("media") ?: JSONArray())
@@ -643,11 +889,6 @@ class MainActivity : Activity() {
                 emptyList()
             }
         }
-        val knownVideos = mediaForStats.count { it.type == "video" }
-        val cachedVideos = mediaForStats.count { it.type == "video" && localVideoFile(it).exists() }
-        val cacheDir = File(filesDir, "optimized")
-        val bytes = cacheDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
-        return CacheStats(knownVideos, cachedVideos, bytes)
     }
 
     private fun formatBytes(bytes: Long): String {
@@ -662,10 +903,13 @@ class MainActivity : Activity() {
         val path: String,
         val url: String,
         val optimizedUrl: String?,
-        val fallbackUrl: String?
+        val fallbackUrl: String?,
+        val sourceWidth: Int?,
+        val sourceHeight: Int?
     )
 
     data class TileRect(val x: Int, val y: Int, val width: Int, val height: Int)
+    data class Box(val width: Double, val height: Double)
     data class MediaResult(val media: List<MediaItem>, val rawJson: String)
     data class CacheStats(val knownVideos: Int, val cachedVideos: Int, val bytes: Long)
 }

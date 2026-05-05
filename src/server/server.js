@@ -900,6 +900,7 @@ async function enrichServerMedia(folderData) {
     item.audioCodec = probe.audioCodec;
     item.needsTranscode = transcodeEnabled && !probe.browserPlayable;
     item.needsOptimize = shouldOptimizeVideo(probe);
+    item.sourceWidth = probe.width;
     item.sourceHeight = probe.height;
     item.sourceBitrate = probe.bitrate;
 
