@@ -37,7 +37,6 @@ const controls = {
 const STORAGE_KEY = "mediaWall.settings.v2";
 const REFRESH_MS = 10000;
 const WEB_VIDEO_LOAD_LIMIT = 4;
-const WEB_VIDEO_START_SLOT_MS = 900;
 const queryHost = new URLSearchParams(window.location.search).get("host");
 const host = window.mediaWall?.mode === "desktop" || queryHost === "desktop" ? "desktop" : "web";
 
@@ -261,6 +260,77 @@ function applyVideoSource(media, source) {
   media.src = source.url;
 }
 
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 MB";
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function shouldBlobLoadVideo(source) {
+  return host === "web" && Boolean(source.url);
+}
+
+function clearBlobVideo(media) {
+  if (media.mediaWallAbortController) {
+    media.mediaWallAbortController.abort();
+    media.mediaWallAbortController = null;
+  }
+  if (media.mediaWallBlobUrl) {
+    URL.revokeObjectURL(media.mediaWallBlobUrl);
+    media.mediaWallBlobUrl = null;
+  }
+}
+
+async function fetchVideoBlob(media, source, tile, item) {
+  const controller = new AbortController();
+  media.mediaWallAbortController = controller;
+  media.dataset.fetchStatus = "fetching";
+  media.dataset.fetchLoaded = "0";
+  media.dataset.fetchTotal = "0";
+  updateVideoDebug(tile, item, media);
+
+  const response = await fetch(source.url, {
+    cache: "force-cache",
+    credentials: "same-origin",
+    signal: controller.signal
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+  const total = Number(response.headers.get("content-length") || 0);
+  const contentType = response.headers.get("content-type") || "video/mp4";
+  media.dataset.fetchTotal = String(total || 0);
+
+  let blob;
+  if (!response.body) {
+    blob = await response.blob();
+    media.dataset.fetchLoaded = String(blob.size);
+  } else {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let loaded = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loaded += value.byteLength;
+      media.dataset.fetchLoaded = String(loaded);
+      updateVideoDebug(tile, item, media);
+    }
+    blob = new Blob(chunks, { type: contentType });
+  }
+
+  if (controller.signal.aborted) return;
+  media.dataset.fetchStatus = "ready";
+  media.dataset.fetchLoaded = String(blob.size);
+  media.mediaWallAbortController = null;
+  if (media.mediaWallBlobUrl) URL.revokeObjectURL(media.mediaWallBlobUrl);
+  media.mediaWallBlobUrl = URL.createObjectURL(blob);
+  applyVideoSource(media, { url: media.mediaWallBlobUrl, source: source.source });
+  media.load();
+  media.play().catch(() => {});
+  releaseVideoLoadSlot(media);
+  updateVideoDebug(tile, item, media);
+}
+
 function processVideoLoadQueue() {
   if (host !== "web") return;
 
@@ -271,12 +341,21 @@ function processVideoLoadQueue() {
     queued.media.dataset.loadQueued = "false";
     queued.media.dataset.loadStarted = "true";
     state.activeVideoLoads += 1;
-    applyVideoSource(queued.media, queued.source);
-    queued.media.load();
-    queued.media.play().catch(() => {});
-    queued.media.dataset.loadSlotTimer = String(window.setTimeout(() => {
-      releaseVideoLoadSlot(queued.media);
-    }, WEB_VIDEO_START_SLOT_MS));
+    if (shouldBlobLoadVideo(queued.source)) {
+      fetchVideoBlob(queued.media, queued.source, queued.tile, queued.item).catch((error) => {
+        if (error.name === "AbortError") return;
+        queued.media.dataset.fetchStatus = `failed: ${error.message}`;
+        releaseVideoLoadSlot(queued.media);
+        applyVideoSource(queued.media, queued.source);
+        queued.media.load();
+        queued.media.play().catch(() => {});
+        updateVideoDebug(queued.tile, queued.item, queued.media);
+      });
+    } else {
+      applyVideoSource(queued.media, queued.source);
+      queued.media.load();
+      queued.media.play().catch(() => {});
+    }
     updateVideoDebug(queued.tile, queued.item, queued.media);
   }
 }
@@ -284,10 +363,6 @@ function processVideoLoadQueue() {
 function releaseVideoLoadSlot(media) {
   if (host !== "web" || media.dataset.loadReleased === "true") return;
   media.dataset.loadReleased = "true";
-  if (media.dataset.loadSlotTimer) {
-    window.clearTimeout(Number(media.dataset.loadSlotTimer));
-    delete media.dataset.loadSlotTimer;
-  }
   if (media.dataset.loadStarted === "true") {
     state.activeVideoLoads = Math.max(0, state.activeVideoLoads - 1);
   }
@@ -299,6 +374,7 @@ function cancelVideoLoad(tile) {
   if (!video) return;
   state.videoLoadQueue = state.videoLoadQueue.filter((queued) => queued.media !== video);
   releaseVideoLoadSlot(video);
+  clearBlobVideo(video);
   video.pause();
   video.removeAttribute("src");
   video.load();
@@ -345,6 +421,12 @@ function updateVideoDebug(tile, item, video) {
     : host === "web" ? `web active loads ${state.activeVideoLoads}/${WEB_VIDEO_LOAD_LIMIT}` : "desktop direct file";
   const loadFlags = `started=${video.dataset.loadStarted === "true"} released=${video.dataset.loadReleased === "true"} hasSrc=${Boolean(video.currentSrc || video.src)}`;
   const errorText = video.error ? `error=${video.error.code}` : "error=none";
+  const fetchStatus = video.dataset.fetchStatus;
+  const fetchLoaded = Number(video.dataset.fetchLoaded || 0);
+  const fetchTotal = Number(video.dataset.fetchTotal || 0);
+  const fetchText = fetchStatus
+    ? `fetch=${fetchStatus} ${formatBytes(fetchLoaded)}${fetchTotal ? ` / ${formatBytes(fetchTotal)}` : ""}`
+    : "fetch=streaming";
   const waiting = tile.classList.contains("loading") ? "loading spinner on" : "playing/ready";
   const current = Number.isFinite(video.currentTime) ? `${video.currentTime.toFixed(1)}s` : "0s";
   const duration = Number.isFinite(video.duration) ? `${video.duration.toFixed(1)}s` : "unknown";
@@ -355,6 +437,7 @@ function updateVideoDebug(tile, item, video) {
     `${waiting} | ${source}`,
     queueText,
     loadFlags,
+    fetchText,
     `ready=${readyStateLabel(video)} network=${networkStateLabel(video)} ${paused}${stalled}`,
     errorText,
     `${bufferedVideoText(video)}`,
