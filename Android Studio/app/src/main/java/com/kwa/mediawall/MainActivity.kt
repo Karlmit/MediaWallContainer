@@ -473,6 +473,10 @@ class MainActivity : Activity() {
     }
 
     private fun showCenter(message: String, durationMs: Long = 0) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { showCenter(message, durationMs) }
+            return
+        }
         splash.text = message
         splash.visibility = View.VISIBLE
         if (durationMs > 0) {
