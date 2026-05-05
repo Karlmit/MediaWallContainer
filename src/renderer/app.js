@@ -368,6 +368,7 @@ function createTile(item) {
   tile.className = `tile loading ${settings().cropMedia ? "" : "contain"}`;
   tile.dataset.id = item.id;
   tile.style.setProperty("--fade-duration", `${settings().fadeMs}ms`);
+  let queuedVideoLoad = null;
 
   const markReady = () => {
     tile.classList.remove("loading");
@@ -453,9 +454,7 @@ function createTile(item) {
     });
     tile.append(debug);
     if (host === "web") {
-      state.videoLoadQueue.push({ tile, item, media, source: initialSource });
-      updateVideoDebug(tile, item, media);
-      processVideoLoadQueue();
+      queuedVideoLoad = { tile, item, media, source: initialSource };
     }
   } else {
     media.src = item.url;
@@ -482,6 +481,12 @@ function createTile(item) {
   updateTileSelection(tile, item.id);
   requestAnimationFrame(() => tile.classList.add("visible"));
   state.tiles.set(item.id, tile);
+  if (queuedVideoLoad) {
+    state.videoLoadQueue.push(queuedVideoLoad);
+    updateVideoDebug(tile, item, media);
+    processVideoLoadQueue();
+    updateLoadingState();
+  }
   return tile;
 }
 
