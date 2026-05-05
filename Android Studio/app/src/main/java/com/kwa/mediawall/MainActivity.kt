@@ -25,11 +25,13 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.VideoView
 import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.math.ceil
 import kotlin.math.max
@@ -57,8 +59,11 @@ class MainActivity : Activity() {
     private var allMedia = emptyList<MediaItem>()
     private var activeMedia = emptyList<MediaItem>()
     private var touchStartY = 0f
+    private var touchLastY = 0f
     private var touchStartTime = 0L
+    private var touchChangedItemCount = false
     private var menuVisible = false
+    private var offlineMode = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,7 +80,7 @@ class MainActivity : Activity() {
         if (pinEnabled && pinCode.isNotBlank()) {
             showPinScreen()
         } else if (serverUrl.isBlank()) {
-            showSetupScreen()
+            showMainMenu()
         } else {
             connectAndLoad()
         }
@@ -112,9 +117,9 @@ class MainActivity : Activity() {
             visibility = View.GONE
         }
         menuButton = Button(this).apply {
-            text = "MediaWall Android"
+            text = "Menu"
             alpha = 0.88f
-            setOnClickListener { showSetupScreen() }
+            setOnClickListener { showMainMenu() }
         }
         root.addView(wall, FrameLayout.LayoutParams(-1, -1))
         root.addView(menuButton, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
@@ -132,13 +137,24 @@ class MainActivity : Activity() {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 touchStartY = event.y
+                touchLastY = event.y
                 touchStartTime = System.currentTimeMillis()
+                touchChangedItemCount = false
                 return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val dy = event.y - touchLastY
+                if (kotlin.math.abs(dy) > 110) {
+                    changeItemCount(if (dy < 0) 1 else -1)
+                    touchLastY = event.y
+                    touchChangedItemCount = true
+                    return true
+                }
             }
             MotionEvent.ACTION_UP -> {
                 val dy = event.y - touchStartY
                 val quickEnough = System.currentTimeMillis() - touchStartTime < 900
-                if (quickEnough && kotlin.math.abs(dy) > 80) {
+                if (!touchChangedItemCount && quickEnough && kotlin.math.abs(dy) > 80) {
                     changeItemCount(if (dy < 0) 1 else -1)
                     return true
                 }
@@ -151,13 +167,13 @@ class MainActivity : Activity() {
         menuVisible = true
         wall.removeAllViews()
         showOverlay(panel("Unlock MediaWall").apply {
-            val pinInput = input("PIN", true)
+            val pinInput = numericPinInput("PIN")
             addView(pinInput)
             addView(button("Unlock") {
                 if (pinInput.text.toString() == pinCode) {
                     clearOverlay()
                     menuVisible = false
-                    if (serverUrl.isBlank()) showSetupScreen() else connectAndLoad()
+                    if (serverUrl.isBlank()) showMainMenu() else connectAndLoad()
                 } else {
                     toast("Wrong PIN")
                 }
@@ -165,10 +181,49 @@ class MainActivity : Activity() {
         })
     }
 
+    private fun showMainMenu() {
+        menuVisible = true
+        showOverlay(panel("MediaWall").apply {
+            addView(TextView(context).apply {
+                text = buildString {
+                    append(if (offlineMode) "Offline mode" else "Online mode")
+                    append("\n")
+                    append("${allMedia.size} media items")
+                    if (serverUrl.isNotBlank()) append("\n$serverUrl")
+                }
+                setTextColor(Color.rgb(166, 167, 173))
+                textSize = 14f
+                setPadding(0, 0, 0, 14)
+            })
+            addView(button("Connection settings") { showSetupScreen() })
+            addView(button("Download status") { showDownloadStatusScreen() })
+            addView(button("Reconnect") {
+                clearOverlay()
+                menuVisible = false
+                connectAndLoad()
+            })
+            addView(button("Open offline") {
+                clearOverlay()
+                menuVisible = false
+                if (!openOfflineMode()) {
+                    toast("No cached offline videos yet")
+                    showMainMenu()
+                }
+            })
+            addView(button("Close menu") {
+                clearOverlay()
+                menuVisible = false
+                if (activeMedia.isEmpty() && allMedia.isNotEmpty()) {
+                    activeMedia = pickActiveMedia()
+                    renderWall()
+                }
+            })
+        })
+    }
+
     private fun showSetupScreen() {
         menuVisible = true
-        wall.removeAllViews()
-        val panel = panel("MediaWall Android")
+        val panel = panel("Connection settings")
         val urlInput = input("Docker URL, for example http://192.168.1.10:3060", false).apply {
             setText(serverUrl)
         }
@@ -185,7 +240,7 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             isChecked = pinEnabled
         }
-        val pinInput = input("PIN", true).apply {
+        val pinInput = numericPinInput("PIN").apply {
             setText(pinCode)
         }
         panel.addView(urlInput)
@@ -210,11 +265,41 @@ class MainActivity : Activity() {
             menuVisible = false
             connectAndLoad()
         })
-        panel.addView(button("Clear private video cache") {
-            File(filesDir, "optimized").deleteRecursively()
-            toast("Private cache cleared")
-        })
+        panel.addView(button("Back to menu") { showMainMenu() })
         showOverlay(panel)
+    }
+
+    private fun showDownloadStatusScreen() {
+        menuVisible = true
+        showOverlay(panel("Download status").apply {
+            val stats = cacheStats()
+            addView(TextView(context).apply {
+                text = buildString {
+                    append("Private video cache\n")
+                    append("${stats.cachedVideos} / ${stats.knownVideos} known videos cached\n")
+                    append("${formatBytes(stats.bytes)} stored in app-private storage\n")
+                    append("\n")
+                    append("Cached files are inside Android app storage and should not appear in the normal device file browser.")
+                }
+                setTextColor(Color.WHITE)
+                textSize = 15f
+                setPadding(0, 0, 0, 16)
+            })
+            addView(button("Clear private video cache") {
+                File(filesDir, "optimized").deleteRecursively()
+                toast("Private cache cleared")
+                showDownloadStatusScreen()
+            })
+            addView(button("Open offline") {
+                clearOverlay()
+                menuVisible = false
+                if (!openOfflineMode()) {
+                    toast("No cached offline videos yet")
+                    showDownloadStatusScreen()
+                }
+            })
+            addView(button("Back to menu") { showMainMenu() })
+        })
     }
 
     private fun panel(title: String): LinearLayout {
@@ -264,6 +349,16 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun numericPinInput(hintText: String): EditText {
+        return EditText(this).apply {
+            hint = hintText
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.rgb(166, 167, 173))
+            setSingleLine(true)
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        }
+    }
+
     private fun button(label: String, action: View.() -> Unit): Button {
         return Button(this).apply {
             text = label
@@ -276,17 +371,23 @@ class MainActivity : Activity() {
         executor.execute {
             try {
                 loginIfNeeded()
-                val media = fetchMedia()
+                val loaded = fetchMediaResult()
                 mainHandler.post {
-                    allMedia = media
+                    offlineMode = false
+                    allMedia = loaded.media
                     activeMedia = pickActiveMedia()
                     renderWall()
+                    prefs.edit().putString("lastMediaJson", loaded.rawJson).apply()
                     showCenter("Loaded ${allMedia.size} items", 900)
                 }
             } catch (error: Exception) {
                 mainHandler.post {
-                    showCenter("Connection failed: ${error.message}", 3500)
-                    showSetupScreen()
+                    if (openOfflineMode()) {
+                        showCenter("Offline mode", 1600)
+                    } else {
+                        showCenter("Connection failed: ${error.message}", 3500)
+                        showMainMenu()
+                    }
                 }
             }
         }
@@ -310,10 +411,14 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun fetchMedia(): List<MediaItem> {
+    private fun fetchMediaResult(): MediaResult {
         val text = requestText("$serverUrl/api/media")
-        val result = org.json.JSONObject(text)
+        val result = JSONObject(text)
         val array = result.optJSONArray("media") ?: JSONArray()
+        return MediaResult(parseMediaArray(array), text)
+    }
+
+    private fun parseMediaArray(array: JSONArray): List<MediaItem> {
         return List(array.length()) { index ->
             val obj = array.getJSONObject(index)
             MediaItem(
@@ -325,6 +430,25 @@ class MainActivity : Activity() {
                 optimizedUrl = obj.optString("optimizedUrl").takeIf { it.isNotBlank() && it != "null" }?.let(::absoluteUrl),
                 fallbackUrl = obj.optString("fallbackUrl").takeIf { it.isNotBlank() && it != "null" }?.let(::absoluteUrl)
             )
+        }
+    }
+
+    private fun openOfflineMode(): Boolean {
+        val savedJson = prefs.getString("lastMediaJson", null) ?: return false
+        return try {
+            val result = JSONObject(savedJson)
+            val media = parseMediaArray(result.optJSONArray("media") ?: JSONArray())
+            val cached = media.filter { item ->
+                item.type == "video" && localVideoFile(item).exists()
+            }
+            if (cached.isEmpty()) return false
+            offlineMode = true
+            allMedia = cached
+            activeMedia = pickActiveMedia()
+            renderWall()
+            true
+        } catch (_: Exception) {
+            false
         }
     }
 
@@ -423,7 +547,13 @@ class MainActivity : Activity() {
         }
 
         executor.execute {
-            val playbackUrl = if (localOptimizedCache) cachedVideoUrl(item) else item.bestRemoteVideoUrl()
+            val playbackUrl = if (offlineMode) {
+                localVideoFile(item).toURI().toString()
+            } else if (localOptimizedCache) {
+                cachedVideoUrl(item)
+            } else {
+                item.bestRemoteVideoUrl()
+            }
             mainHandler.post {
                 tile.removeView(progress)
                 tile.addView(VideoView(this).apply {
@@ -444,9 +574,8 @@ class MainActivity : Activity() {
     }
 
     private fun cachedVideoUrl(item: MediaItem): String {
-        val sourceUrl = item.optimizedUrl ?: item.fallbackUrl ?: item.url
-        val cacheDir = File(filesDir, "optimized").apply { mkdirs() }
-        val cacheFile = File(cacheDir, "${sha256(sourceUrl)}.mp4")
+        val sourceUrl = item.bestRemoteVideoUrl()
+        val cacheFile = localVideoFile(item)
         if (cacheFile.exists() && cacheFile.length() > 0) return cacheFile.toURI().toString()
         showCenter("Downloading private optimized video", 900)
         val connection = open(sourceUrl)
@@ -454,6 +583,12 @@ class MainActivity : Activity() {
             FileOutputStream(cacheFile).use { output -> input.copyTo(output) }
         }
         return cacheFile.toURI().toString()
+    }
+
+    private fun localVideoFile(item: MediaItem): File {
+        val sourceUrl = item.bestRemoteVideoUrl()
+        val cacheDir = File(filesDir, "optimized").apply { mkdirs() }
+        return File(cacheDir, "${sha256(sourceUrl)}.mp4")
     }
 
     private fun MediaItem.bestRemoteVideoUrl(): String {
@@ -474,7 +609,7 @@ class MainActivity : Activity() {
         prefs.edit().putInt("itemCount", itemCount).apply()
         activeMedia = pickActiveMedia()
         renderWall()
-        showCenter("$itemCount items", 900)
+        showCenter("$itemCount item${if (itemCount == 1) "" else "s"}", 900)
     }
 
     private fun showCenter(message: String, durationMs: Long = 0) {
@@ -499,6 +634,27 @@ class MainActivity : Activity() {
             .joinToString("") { "%02x".format(it) }
     }
 
+    private fun cacheStats(): CacheStats {
+        val mediaForStats = allMedia.takeIf { it.isNotEmpty() } ?: run {
+            val savedJson = prefs.getString("lastMediaJson", null) ?: ""
+            try {
+                parseMediaArray(JSONObject(savedJson).optJSONArray("media") ?: JSONArray())
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+        val knownVideos = mediaForStats.count { it.type == "video" }
+        val cachedVideos = mediaForStats.count { it.type == "video" && localVideoFile(it).exists() }
+        val cacheDir = File(filesDir, "optimized")
+        val bytes = cacheDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
+        return CacheStats(knownVideos, cachedVideos, bytes)
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        if (bytes <= 0L) return "0 MB"
+        return String.format(Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0)
+    }
+
     data class MediaItem(
         val id: String,
         val name: String,
@@ -510,4 +666,6 @@ class MainActivity : Activity() {
     )
 
     data class TileRect(val x: Int, val y: Int, val width: Int, val height: Int)
+    data class MediaResult(val media: List<MediaItem>, val rawJson: String)
+    data class CacheStats(val knownVideos: Int, val cachedVideos: Int, val bytes: Long)
 }
