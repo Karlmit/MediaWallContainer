@@ -60,6 +60,8 @@ class MainActivity : Activity() {
     private var localOptimizedCache = false
     private var pinEnabled = false
     private var pinCode = ""
+    private var allowVertical = true
+    private var allowHorizontal = true
     private var allMedia = emptyList<MediaItem>()
     private var subfolders = emptyList<SubfolderItem>()
     private var excludedSubfolders = mutableSetOf<String>()
@@ -106,6 +108,8 @@ class MainActivity : Activity() {
         localOptimizedCache = prefs.getBoolean("localOptimizedCache", false)
         pinEnabled = prefs.getBoolean("pinEnabled", false)
         pinCode = prefs.getString("pinCode", "") ?: ""
+        allowVertical = prefs.getBoolean("allowVertical", true)
+        allowHorizontal = prefs.getBoolean("allowHorizontal", true)
         excludedSubfolders = (prefs.getStringSet("excludedSubfolders", emptySet()) ?: emptySet()).toMutableSet()
         buildRoot()
         if (pinEnabled && pinCode.isNotBlank()) {
@@ -359,18 +363,35 @@ class MainActivity : Activity() {
         val pinInput = numericPinInput("PIN").apply {
             setText(pinCode)
         }
+        val verticalToggle = CheckBox(this).apply {
+            text = "Allow vertical"
+            setTextColor(Color.WHITE)
+            isChecked = allowVertical
+        }
+        val horizontalToggle = CheckBox(this).apply {
+            text = "Allow horizontal"
+            setTextColor(Color.WHITE)
+            isChecked = allowHorizontal
+        }
         panel.addView(cacheToggle)
+        panel.addView(verticalToggle)
+        panel.addView(horizontalToggle)
         panel.addView(pinToggle)
         panel.addView(pinInput)
         panel.addView(button("Save settings") {
             localOptimizedCache = cacheToggle.isChecked
+            allowVertical = verticalToggle.isChecked
+            allowHorizontal = horizontalToggle.isChecked
             pinEnabled = pinToggle.isChecked
             pinCode = pinInput.text.toString()
             prefs.edit()
                 .putBoolean("localOptimizedCache", localOptimizedCache)
+                .putBoolean("allowVertical", allowVertical)
+                .putBoolean("allowHorizontal", allowHorizontal)
                 .putBoolean("pinEnabled", pinEnabled)
                 .putString("pinCode", pinCode)
                 .apply()
+            applySubfolderFilters()
             toast("Settings saved")
             showMainMenu()
         })
@@ -703,10 +724,24 @@ class MainActivity : Activity() {
     }
 
     private fun filteredMedia(): List<MediaItem> {
-        if (excludedSubfolders.isEmpty()) return allMedia
         return allMedia.filter { item ->
-            excludedSubfolders.none { subfolderPath -> item.isInsideSubfolder(subfolderPath) }
+            excludedSubfolders.none { subfolderPath -> item.isInsideSubfolder(subfolderPath) } &&
+                item.isAllowedOrientation()
         }
+    }
+
+    private fun MediaItem.isAllowedOrientation(): Boolean {
+        if (allowVertical && allowHorizontal) return true
+        if (!allowVertical && !allowHorizontal) return false
+        val vertical = isVertical()
+        return if (vertical) allowVertical else allowHorizontal
+    }
+
+    private fun MediaItem.isVertical(): Boolean {
+        val width = sourceWidth ?: 0
+        val height = sourceHeight ?: 0
+        if (width > 0 && height > 0) return height > width
+        return aspectRatio() < 1.0
     }
 
     private fun MediaItem.isInsideSubfolder(subfolderPath: String): Boolean {

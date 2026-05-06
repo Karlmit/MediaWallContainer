@@ -33,6 +33,8 @@ const controls = {
   swapSeconds: document.querySelector("#swapSeconds"),
   fadeSeconds: document.querySelector("#fadeSeconds"),
   cropMedia: document.querySelector("#cropMedia"),
+  allowVertical: document.querySelector("#allowVertical"),
+  allowHorizontal: document.querySelector("#allowHorizontal"),
   videoDebug: document.querySelector("#videoDebug")
 };
 
@@ -81,6 +83,8 @@ function saveSettings() {
     swapSeconds: controls.swapSeconds.value,
     fadeSeconds: controls.fadeSeconds.value,
     cropMedia: controls.cropMedia.checked,
+    allowVertical: controls.allowVertical.checked,
+    allowHorizontal: controls.allowHorizontal.checked,
     videoDebug: controls.videoDebug.checked,
     paused: state.paused,
     excludedSubfolders: [...state.excludedSubfolders]
@@ -95,6 +99,8 @@ function applySavedSettings() {
   if (saved.swapSeconds) controls.swapSeconds.value = saved.swapSeconds;
   if (saved.fadeSeconds) controls.fadeSeconds.value = saved.fadeSeconds;
   if (typeof saved.cropMedia === "boolean") controls.cropMedia.checked = saved.cropMedia;
+  if (typeof saved.allowVertical === "boolean") controls.allowVertical.checked = saved.allowVertical;
+  if (typeof saved.allowHorizontal === "boolean") controls.allowHorizontal.checked = saved.allowHorizontal;
   if (typeof saved.videoDebug === "boolean") controls.videoDebug.checked = saved.videoDebug;
   if (typeof saved.paused === "boolean") state.paused = saved.paused;
   if (Array.isArray(saved.excludedSubfolders)) {
@@ -148,13 +154,26 @@ function isInsideSubfolder(item, subfolderPath) {
   return normalizedItemPath === normalizedSubfolderPath || normalizedItemPath.startsWith(`${normalizedSubfolderPath}/`);
 }
 
+function isVerticalItem(item) {
+  const width = Number(item.sourceWidth || 0);
+  const height = Number(item.sourceHeight || 0);
+  if (width > 0 && height > 0) return height > width;
+  return getRatio(item) < 1;
+}
+
+function isAllowedOrientation(item) {
+  if (controls.allowVertical.checked && controls.allowHorizontal.checked) return true;
+  if (!controls.allowVertical.checked && !controls.allowHorizontal.checked) return false;
+  const vertical = isVerticalItem(item);
+  return vertical ? controls.allowVertical.checked : controls.allowHorizontal.checked;
+}
+
 function visibleMediaFromFilters() {
-  if (!state.excludedSubfolders.size) return state.allMedia;
   return state.allMedia.filter((item) => {
     for (const subfolderPath of state.excludedSubfolders) {
       if (isInsideSubfolder(item, subfolderPath)) return false;
     }
-    return true;
+    return isAllowedOrientation(item);
   });
 }
 
@@ -1491,6 +1510,11 @@ window.addEventListener("keydown", (event) => {
 for (const input of Object.values(controls)) {
   input.addEventListener("input", () => {
     saveSettings();
+    if (input === controls.allowVertical || input === controls.allowHorizontal) {
+      applySubfolderFilters();
+      restartSwapTimer();
+      return;
+    }
     if (input === controls.videoDebug) {
       refreshVideoDebug();
       processVideoLoadQueue();
