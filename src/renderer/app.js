@@ -62,6 +62,8 @@ const state = {
   itemCountSplashTimer: null,
   videoWatchTimer: null,
   diagnosticsTimer: null,
+  orientationProbeToken: 0,
+  orientationProbeRunning: false,
   activeVideoLoads: 0,
   videoLoadQueue: [],
   paused: false
@@ -158,7 +160,8 @@ function isVerticalItem(item) {
   const width = Number(item.sourceWidth || 0);
   const height = Number(item.sourceHeight || 0);
   if (width > 0 && height > 0) return height > width;
-  return getRatio(item) < 1;
+  if (state.ratios.has(item.id)) return getRatio(item) < 1;
+  return false;
 }
 
 function isAllowedOrientation(item) {
@@ -180,6 +183,63 @@ function visibleMediaFromFilters() {
 function applySubfolderFilters() {
   state.media = visibleMediaFromFilters();
   updateMediaList(state.media, false);
+  startOrientationProbe();
+}
+
+function orientationFilterIsRestrictive() {
+  return controls.allowVertical && controls.allowHorizontal &&
+    controls.allowVertical.checked !== controls.allowHorizontal.checked;
+}
+
+function hasKnownDimensions(item) {
+  return (Number(item.sourceWidth || 0) > 0 && Number(item.sourceHeight || 0) > 0) ||
+    state.ratios.has(item.id);
+}
+
+function probeMediaDimensions(item, token) {
+  return new Promise((resolve) => {
+    const media = document.createElement(item.type === "video" ? "video" : "img");
+    const cleanup = () => {
+      media.removeAttribute("src");
+      media.load?.();
+      resolve();
+    };
+    const timeout = setTimeout(cleanup, 8000);
+    const done = () => {
+      clearTimeout(timeout);
+      const width = item.type === "video" ? media.videoWidth : media.naturalWidth;
+      const height = item.type === "video" ? media.videoHeight : media.naturalHeight;
+      if (token === state.orientationProbeToken) {
+        updateKnownDimensions(item.id, width, height);
+        state.media = visibleMediaFromFilters();
+        updateMediaList(state.media, false);
+      }
+      cleanup();
+    };
+    media.preload = "metadata";
+    media.muted = true;
+    media.addEventListener(item.type === "video" ? "loadedmetadata" : "load", done, { once: true });
+    media.addEventListener("error", () => {
+      clearTimeout(timeout);
+      resolve();
+    }, { once: true });
+    media.src = item.url;
+  });
+}
+
+async function startOrientationProbe() {
+  if (host !== "desktop" || state.orientationProbeRunning || !orientationFilterIsRestrictive()) return;
+  state.orientationProbeRunning = true;
+  const token = ++state.orientationProbeToken;
+  try {
+    for (const item of state.allMedia) {
+      if (token !== state.orientationProbeToken || !orientationFilterIsRestrictive()) break;
+      if (hasKnownDimensions(item)) continue;
+      await probeMediaDimensions(item, token);
+    }
+  } finally {
+    if (token === state.orientationProbeToken) state.orientationProbeRunning = false;
+  }
 }
 
 function renderSubfolderList() {
@@ -265,11 +325,27 @@ function refreshTileSelections() {
   }
 }
 
+function updateKnownDimensions(itemId, width, height) {
+  if (!width || !height) return;
+  state.ratios.set(itemId, width / height);
+  for (const collection of [state.allMedia, state.media, state.active]) {
+    const item = collection.find((candidate) => candidate.id === itemId);
+    if (item) {
+      item.sourceWidth = width;
+      item.sourceHeight = height;
+    }
+  }
+}
+
 function measureMedia(item, element) {
   const width = item.type === "video" ? element.videoWidth : element.naturalWidth;
   const height = item.type === "video" ? element.videoHeight : element.naturalHeight;
   if (width && height) {
-    state.ratios.set(item.id, width / height);
+    updateKnownDimensions(item.id, width, height);
+    if (!isAllowedOrientation(item)) {
+      applySubfolderFilters();
+      return;
+    }
     layout();
   }
 }
