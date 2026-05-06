@@ -519,6 +519,11 @@ input {
   gap: 10px;
 }
 
+.subfolder-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .subfolder-action {
   border: 1px solid var(--border);
   border-radius: 6px;

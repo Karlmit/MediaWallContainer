@@ -14,6 +14,7 @@ const loadingState = document.querySelector("#loadingState");
 const statusSplash = document.querySelector("#statusSplash");
 const itemCountSplash = document.querySelector("#itemCountSplash");
 const subfolderList = document.querySelector("#subfolderList");
+const selectSubfoldersButton = document.querySelector("#selectSubfoldersButton");
 const deselectSubfoldersButton = document.querySelector("#deselectSubfoldersButton");
 const diagnosticsPanel = document.querySelector("#diagnosticsPanel");
 const diagnosticsCloseButton = document.querySelector("#diagnosticsCloseButton");
@@ -164,6 +165,9 @@ function applySubfolderFilters() {
 
 function renderSubfolderList() {
   subfolderList.textContent = "";
+  if (selectSubfoldersButton) {
+    selectSubfoldersButton.disabled = !state.subfolders.length || state.excludedSubfolders.size === 0;
+  }
   if (deselectSubfoldersButton) {
     deselectSubfoldersButton.disabled = !state.subfolders.length || state.excludedSubfolders.size === state.subfolders.length;
   }
@@ -201,6 +205,13 @@ function renderSubfolderList() {
     row.append(checkbox, name);
     subfolderList.append(row);
   }
+}
+
+function selectAllSubfolders() {
+  state.excludedSubfolders.clear();
+  saveSettings();
+  renderSubfolderList();
+  applySubfolderFilters();
 }
 
 function deselectAllSubfolders() {
@@ -1395,6 +1406,7 @@ menuButton.addEventListener("click", () => debugPanel.classList.toggle("hidden")
 diagnosticsCloseButton.addEventListener("click", () => setDiagnosticsVisible(false));
 if (chooseFolderButton) chooseFolderButton.addEventListener("click", chooseDesktopFolder);
 if (debugChooseFolderButton) debugChooseFolderButton.addEventListener("click", chooseDesktopFolder);
+if (selectSubfoldersButton) selectSubfoldersButton.addEventListener("click", selectAllSubfolders);
 if (deselectSubfoldersButton) deselectSubfoldersButton.addEventListener("click", deselectAllSubfolders);
 pauseButton.addEventListener("click", togglePause);
 fullscreenButton.addEventListener("click", () => {
