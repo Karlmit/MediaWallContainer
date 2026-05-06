@@ -61,6 +61,8 @@ class MainActivity : Activity() {
     private var pinEnabled = false
     private var pinCode = ""
     private var allMedia = emptyList<MediaItem>()
+    private var subfolders = emptyList<SubfolderItem>()
+    private var excludedSubfolders = mutableSetOf<String>()
     private var activeMedia = emptyList<MediaItem>()
     private val tileViews = mutableMapOf<String, FrameLayout>()
     private var touchStartY = 0f
@@ -104,6 +106,7 @@ class MainActivity : Activity() {
         localOptimizedCache = prefs.getBoolean("localOptimizedCache", false)
         pinEnabled = prefs.getBoolean("pinEnabled", false)
         pinCode = prefs.getString("pinCode", "") ?: ""
+        excludedSubfolders = (prefs.getStringSet("excludedSubfolders", emptySet()) ?: emptySet()).toMutableSet()
         buildRoot()
         if (pinEnabled && pinCode.isNotBlank()) {
             showPinScreen()
@@ -263,7 +266,7 @@ class MainActivity : Activity() {
                 text = buildString {
                     append(if (offlineMode) "Offline mode" else "Online mode")
                     append("\n")
-                    append("${allMedia.size} media items")
+                    append("${filteredMedia().size} / ${allMedia.size} media items")
                     append("\n")
                     append("$itemCount visible item${if (itemCount == 1) "" else "s"}")
                     if (serverUrl.isNotBlank()) append("\n$serverUrl")
@@ -289,6 +292,7 @@ class MainActivity : Activity() {
                 connectAndLoad()
             })
             addView(button("Connection settings") { showConnectionSettingsScreen() })
+            addView(button("Subfolders") { showSubfolderScreen() })
             addView(button("Android settings") { showAndroidSettingsScreen() })
             addView(button("Close menu") {
                 clearOverlay()
@@ -372,6 +376,56 @@ class MainActivity : Activity() {
         })
         panel.addView(button("Back to menu") { showMainMenu() })
         showOverlay(panel)
+    }
+
+    private fun showSubfolderScreen() {
+        menuVisible = true
+        overlayScreen = "subfolders"
+        showOverlay(panel("Subfolders").apply {
+            addView(TextView(context).apply {
+                text = if (subfolders.isEmpty()) {
+                    "No subfolders found"
+                } else {
+                    "${filteredMedia().size} / ${allMedia.size} media items visible"
+                }
+                setTextColor(Color.rgb(166, 167, 173))
+                textSize = 14f
+                setPadding(0, 0, 0, 14)
+            })
+            if (subfolders.isNotEmpty()) {
+                addView(button("Select all subfolders") {
+                    excludedSubfolders.clear()
+                    saveSubfolderSettings()
+                    applySubfolderFilters()
+                    showSubfolderScreen()
+                })
+                addView(button("Deselect all subfolders") {
+                    excludedSubfolders = subfolders.map { it.path }.toMutableSet()
+                    saveSubfolderSettings()
+                    applySubfolderFilters()
+                    showSubfolderScreen()
+                })
+                subfolders.forEach { subfolder ->
+                    addView(CheckBox(context).apply {
+                        text = subfolder.name
+                        setTextColor(Color.WHITE)
+                        textSize = 18f
+                        isChecked = subfolder.path !in excludedSubfolders
+                        setPadding(0, 8, 0, 8)
+                        setOnCheckedChangeListener { _, checked ->
+                            if (checked) {
+                                excludedSubfolders.remove(subfolder.path)
+                            } else {
+                                excludedSubfolders.add(subfolder.path)
+                            }
+                            saveSubfolderSettings()
+                            applySubfolderFilters()
+                        }
+                    })
+                }
+            }
+            addView(button("Back to menu") { showMainMenu() })
+        })
     }
 
     private fun showDownloadStatusScreen() {
@@ -495,6 +549,9 @@ class MainActivity : Activity() {
                 mainHandler.post {
                     offlineMode = false
                     allMedia = loaded.media
+                    subfolders = loaded.subfolders
+                    excludedSubfolders.retainAll(subfolders.map { it.path }.toSet())
+                    saveSubfolderSettings()
                     activeMedia = pickActiveMedia()
                     renderWall()
                     scheduleRandomSwap()
@@ -536,7 +593,8 @@ class MainActivity : Activity() {
         val text = requestText("$serverUrl/api/media")
         val result = JSONObject(text)
         val array = result.optJSONArray("media") ?: JSONArray()
-        return MediaResult(parseMediaArray(array), text)
+        val subfolderArray = result.optJSONArray("subfolders") ?: JSONArray()
+        return MediaResult(parseMediaArray(array), parseSubfolderArray(subfolderArray), text)
     }
 
     private fun parseMediaArray(array: JSONArray): List<MediaItem> {
@@ -556,11 +614,24 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun parseSubfolderArray(array: JSONArray): List<SubfolderItem> {
+        return List(array.length()) { index ->
+            val obj = array.getJSONObject(index)
+            SubfolderItem(
+                name = obj.optString("name", obj.optString("path", "")),
+                path = obj.optString("path")
+            )
+        }.filter { it.path.isNotBlank() }
+    }
+
     private fun openOfflineMode(): Boolean {
         val savedJson = prefs.getString("lastMediaJson", null) ?: return false
         return try {
             val result = JSONObject(savedJson)
             val media = parseMediaArray(result.optJSONArray("media") ?: JSONArray())
+            subfolders = parseSubfolderArray(result.optJSONArray("subfolders") ?: JSONArray())
+            excludedSubfolders.retainAll(subfolders.map { it.path }.toSet())
+            saveSubfolderSettings()
             val cached = media.filter { item ->
                 item.type == "video" && localOptimizedFile(item)?.exists() == true
             }
@@ -611,22 +682,47 @@ class MainActivity : Activity() {
     }
 
     private fun pickActiveMedia(): List<MediaItem> {
-        if (allMedia.isEmpty()) return emptyList()
-        return allMedia.shuffled().take(minOf(itemCount, MAX_ANDROID_ITEMS, allMedia.size))
+        val media = filteredMedia()
+        if (media.isEmpty()) return emptyList()
+        return media.shuffled().take(minOf(itemCount, MAX_ANDROID_ITEMS, media.size))
     }
 
     private fun resizeActiveMedia(targetCount: Int): List<MediaItem> {
-        if (allMedia.isEmpty() || targetCount <= 0) return emptyList()
-        val target = minOf(targetCount, MAX_ANDROID_ITEMS, allMedia.size)
+        val media = filteredMedia()
+        if (media.isEmpty() || targetCount <= 0) return emptyList()
+        val target = minOf(targetCount, MAX_ANDROID_ITEMS, media.size)
         val existing = activeMedia.filter { active ->
-            allMedia.any { it.id == active.id }
+            media.any { it.id == active.id }
         }.take(target).toMutableList()
         if (existing.size >= target) return existing
 
         val existingIds = existing.mapTo(mutableSetOf()) { it.id }
-        val candidates = allMedia.filter { it.id !in existingIds }.shuffled()
+        val candidates = media.filter { it.id !in existingIds }.shuffled()
         existing.addAll(candidates.take(target - existing.size))
         return existing
+    }
+
+    private fun filteredMedia(): List<MediaItem> {
+        if (excludedSubfolders.isEmpty()) return allMedia
+        return allMedia.filter { item ->
+            excludedSubfolders.none { subfolderPath -> item.isInsideSubfolder(subfolderPath) }
+        }
+    }
+
+    private fun MediaItem.isInsideSubfolder(subfolderPath: String): Boolean {
+        val itemPath = path.replace("\\", "/").lowercase(Locale.US)
+        val folderPath = subfolderPath.replace("\\", "/").lowercase(Locale.US)
+        return itemPath == folderPath || itemPath.startsWith("$folderPath/")
+    }
+
+    private fun saveSubfolderSettings() {
+        prefs.edit().putStringSet("excludedSubfolders", excludedSubfolders).apply()
+    }
+
+    private fun applySubfolderFilters() {
+        activeMedia = resizeActiveMedia(itemCount)
+        renderWall()
+        scheduleRandomSwap()
     }
 
     private fun renderWall() {
@@ -854,7 +950,8 @@ class MainActivity : Activity() {
 
     private fun replaceRandomItem() {
         if (activeMedia.isEmpty()) return
-        if (allMedia.size <= activeMedia.size) return
+        val media = filteredMedia()
+        if (media.size <= activeMedia.size) return
         replaceItem(activeMedia[Random.nextInt(activeMedia.size)].id)
     }
 
@@ -862,7 +959,7 @@ class MainActivity : Activity() {
         val index = activeMedia.indexOfFirst { it.id == itemId }
         if (index < 0) return
         val activeIds = activeMedia.mapTo(mutableSetOf()) { it.id }
-        val candidates = allMedia.filter { it.id !in activeIds }
+        val candidates = filteredMedia().filter { it.id !in activeIds }
         if (candidates.isEmpty()) return
         selectedItemIds.remove(itemId)
         val oldTile = tileViews.remove(itemId)
@@ -969,7 +1066,7 @@ class MainActivity : Activity() {
     }
 
     private fun changeItemCount(delta: Int) {
-        val maxItems = minOf(MAX_ANDROID_ITEMS, max(1, allMedia.size))
+        val maxItems = minOf(MAX_ANDROID_ITEMS, max(1, filteredMedia().size))
         val nextCount = (itemCount + delta).coerceIn(1, maxItems)
         if (nextCount == itemCount) return
         itemCount = nextCount
@@ -1039,8 +1136,9 @@ class MainActivity : Activity() {
         val sourceHeight: Int?
     )
 
+    data class SubfolderItem(val name: String, val path: String)
     data class TileRect(val x: Int, val y: Int, val width: Int, val height: Int)
     data class Box(val width: Double, val height: Double)
-    data class MediaResult(val media: List<MediaItem>, val rawJson: String)
+    data class MediaResult(val media: List<MediaItem>, val subfolders: List<SubfolderItem>, val rawJson: String)
     data class CacheStats(val knownVideos: Int, val cachedVideos: Int, val bytes: Long)
 }

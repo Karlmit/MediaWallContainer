@@ -62,7 +62,7 @@ The tool asks for:
 - NVENC preset, such as `p1` fastest or `p5` balanced
 - Quality settings
 
-The output folder will contain MP4 files plus `manifest.json`. Mount that same folder as `/optimized` in Docker.
+The output folder will contain MP4 files in matching subfolders plus `manifest.json`. Mount that same folder as `/optimized` in Docker.
 
 ## Docker Settings To Match
 

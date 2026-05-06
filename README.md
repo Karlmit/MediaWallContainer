@@ -13,7 +13,7 @@ The Docker and Windows versions use the same shared wall UI. The Android app is 
 - Displays many images and videos fullscreen from a folder and its subfolders.
 - Automatically packs media tiles to fill the screen.
 - Randomly swaps media over time.
-- Supports image/video subfolder filters.
+- Supports image/video subfolder filters, including a one-click deselect-all control.
 - Supports crop-to-fill or contain mode.
 - Mouse wheel changes visible item count.
 - Space pauses/resumes random swaps.
@@ -154,7 +154,7 @@ node tools\local-optimizer\optimizer.js `
   --compose-port 3060
 ```
 
-The tool asks for the original media folder, optimized output folder, quality, max height, and file limit. It creates MP4 files plus a `manifest.json` that the Docker app can reuse. It also prints and saves a complete compose recommendation to `mediawall-compose.recommended.yml` inside the optimized output folder.
+The tool asks for the original media folder, optimized output folder, quality, max height, and file limit. It creates MP4 files in matching subfolders plus a `manifest.json` that the Docker app can reuse. It also prints and saves a complete compose recommendation to `mediawall-compose.recommended.yml` inside the optimized output folder.
 
 For best compatibility, point the original folder at the same SMB share that Unraid uses for `/media`. MediaWall matches optimized files by relative path, source size, and source modified time. If you optimize from a copied folder whose timestamps differ from the Unraid originals, Docker may treat the optimized files as stale and rebuild them.
 

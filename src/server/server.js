@@ -178,14 +178,16 @@ function sourceSignature(relativePath, stats) {
   return `${relativePath}:${stats.size}:${stats.mtimeMs}`;
 }
 
+function safePathPart(part) {
+  return part.replace(/[^a-z0-9._-]+/gi, "_").replace(/^_+|_+$/g, "") || "media";
+}
+
 function stableCacheName(relativePath, stats) {
   const sourceHash = crypto.createHash("sha256").update(sourceSignature(relativePath, stats)).digest("hex");
-  const extensionlessName = relativePath
-    .replace(/\.[^/.]+$/, "")
-    .split("/")
-    .map((part) => part.replace(/[^a-z0-9._-]+/gi, "_").replace(/^_+|_+$/g, "") || "media")
-    .join("__");
-  return `${extensionlessName}.${sourceHash.slice(0, 16)}.mp4`;
+  const parsed = path.posix.parse(relativePath);
+  const folderParts = parsed.dir ? parsed.dir.split("/").map(safePathPart) : [];
+  const fileName = `${safePathPart(parsed.name)}.${sourceHash.slice(0, 16)}.mp4`;
+  return [...folderParts, fileName].join("/");
 }
 
 async function loadManifest() {
@@ -530,7 +532,7 @@ async function transcodeToMp4(relativePath, fullPath) {
   const transcode = (async () => {
     const startedAt = Date.now();
     const probe = await probeVideo(relativePath, fullPath);
-    await fs.mkdir(transcodeCacheRoot, { recursive: true });
+    await fs.mkdir(path.dirname(cachePath), { recursive: true });
     const tempPath = `${cachePath}.${process.pid}.${Date.now()}.tmp.mp4`;
     entry.status = "transcoding";
     entry.error = null;
@@ -577,7 +579,7 @@ async function transcodeToMp4(relativePath, fullPath) {
     await fs.rename(tempPath, cachePath);
     const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
     entry.status = "ready";
-    entry.cacheFile = path.basename(cachePath);
+    entry.cacheFile = path.relative(transcodeCacheRoot, cachePath).split(path.sep).join("/");
     entry.transcodeMode = transcodeMode;
     entry.updatedAt = new Date().toISOString();
     scheduleManifestWrite();
@@ -636,7 +638,7 @@ async function optimizeToMp4(relativePath, fullPath, probe) {
   const optimization = (async () => {
     const startedAt = Date.now();
     const currentProbe = probe || await probeVideo(relativePath, fullPath);
-    await fs.mkdir(optimizedMediaRoot, { recursive: true });
+    await fs.mkdir(path.dirname(cachePath), { recursive: true });
     const tempPath = `${cachePath}.${process.pid}.${Date.now()}.tmp.mp4`;
     entry.status = "transcoding";
     entry.error = null;
@@ -695,7 +697,7 @@ async function optimizeToMp4(relativePath, fullPath, probe) {
     const optimizedStats = await fs.stat(cachePath);
     const durationSeconds = ((Date.now() - startedAt) / 1000).toFixed(1);
     entry.status = "ready";
-    entry.cacheFile = path.basename(cachePath);
+    entry.cacheFile = path.relative(optimizedMediaRoot, cachePath).split(path.sep).join("/");
     entry.transcodeMode = transcodeMode;
     entry.originalSize = currentProbe.size;
     entry.optimizedSize = optimizedStats.size;

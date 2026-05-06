@@ -47,21 +47,21 @@ function sourceSignature(relativePath, stats) {
   return `${relativePath}:${stats.size}:${stats.mtimeMs}`;
 }
 
+function safePathPart(part) {
+  return part.replace(/[^a-z0-9._-]+/gi, "_").replace(/^_+|_+$/g, "") || "media";
+}
+
 function stableCacheName(relativePath, stats) {
   const sourceHash = crypto
     .createHash("sha256")
     .update(sourceSignature(relativePath, stats))
     .digest("hex");
 
-  const extensionlessName = relativePath
-    .replace(/\.[^/.]+$/, "")
-    .split("/")
-    .map((part) =>
-      part.replace(/[^a-z0-9._-]+/gi, "_").replace(/^_+|_+$/g, "") || "media"
-    )
-    .join("__");
+  const parsed = path.posix.parse(relativePath);
+  const folderParts = parsed.dir ? parsed.dir.split("/").map(safePathPart) : [];
+  const fileName = `${safePathPart(parsed.name)}.${sourceHash.slice(0, 16)}.mp4`;
 
-  return `${extensionlessName}.${sourceHash.slice(0, 16)}.mp4`;
+  return [...folderParts, fileName].join("/");
 }
 
 function run(command, args, options = {}) {
@@ -660,6 +660,7 @@ async function main() {
       }
 
       const tempPath = `${outputPath}.${process.pid}.${Date.now()}.tmp.mp4`;
+      await fs.mkdir(path.dirname(outputPath), { recursive: true });
 
       manifest.entries[sourceKey] = {
         sourcePath: video.relativePath,
