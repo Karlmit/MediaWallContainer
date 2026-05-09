@@ -327,6 +327,7 @@ class MainActivity : Activity() {
             addView(verticalToggle)
             addView(horizontalToggle)
             addView(button("Subfolders") { showSubfolderScreen() })
+            addView(button("Settings") { showSettingsScreen() })
             addView(button("Close menu") {
                 clearOverlay()
                 menuVisible = false
@@ -336,7 +337,6 @@ class MainActivity : Activity() {
                 }
                 scheduleRandomSwap()
             })
-            addView(button("Settings") { showSettingsScreen() })
         })
     }
 
