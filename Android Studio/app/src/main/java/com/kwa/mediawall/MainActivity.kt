@@ -498,13 +498,14 @@ class MainActivity : Activity() {
                 showDownloadStatusScreen()
             })
             if (downloadJobs.isNotEmpty()) {
+                val visibleJobs = visibleDownloadJobs()
                 addView(TextView(context).apply {
-                    text = "Active download queue"
+                    text = "Active download queue (${visibleJobs.size} shown of ${downloadJobs.size})"
                     setTextColor(Color.WHITE)
                     textSize = 18f
                     setPadding(0, 14, 0, 8)
                 })
-                downloadJobs.forEach { job -> addView(downloadJobRow(job)) }
+                visibleJobs.forEach { job -> addView(downloadJobRow(job)) }
             } else {
                 addView(TextView(context).apply {
                     text = "No active downloads. Start a download above, or retry failed downloads after a failed run."
@@ -551,6 +552,36 @@ class MainActivity : Activity() {
                 isIndeterminate = job.status == "downloading" && job.totalBytes <= 0
             }, LinearLayout.LayoutParams(-1, 18))
         }
+    }
+
+    private fun visibleDownloadJobs(): List<DownloadJob> {
+        return downloadJobs.sortedWith { left, right ->
+            val priorityCompare = downloadStatusPriority(left.status).compareTo(downloadStatusPriority(right.status))
+            if (priorityCompare != 0) return@sortedWith priorityCompare
+
+            if (left.status == "queued" && right.status == "queued") {
+                return@sortedWith left.order.compareTo(right.order)
+            }
+
+            right.updatedAt.compareTo(left.updatedAt)
+        }.take(10)
+    }
+
+    private fun downloadStatusPriority(status: String): Int {
+        return when (status) {
+            "downloading" -> 0
+            "failed" -> 1
+            "queued" -> 2
+            "canceled" -> 3
+            "finished" -> 4
+            else -> 5
+        }
+    }
+
+    private fun updateDownloadJob(job: DownloadJob, status: String? = null, error: String? = null) {
+        status?.let { job.status = it }
+        error?.let { job.error = it }
+        job.updatedAt = System.currentTimeMillis()
     }
 
     private fun panel(title: String): LinearLayout {
@@ -1145,7 +1176,7 @@ class MainActivity : Activity() {
         downloadFailed = 0
         downloadCurrent = ""
         downloadJobs.clear()
-        downloadJobs.addAll(targets.map { DownloadJob(it, "queued") })
+        downloadJobs.addAll(targets.mapIndexed { index, item -> DownloadJob(item, "queued", order = index) })
         if (targets.isEmpty()) {
             downloadStatusText = "All optimized videos are already cached"
             toast(downloadStatusText)
@@ -1157,7 +1188,7 @@ class MainActivity : Activity() {
         executor.execute {
             downloadJobs.forEach { job ->
                 if (downloadCancelRequested) {
-                    mainHandler.post { job.status = "canceled" }
+                    mainHandler.post { updateDownloadJob(job, "canceled") }
                     return@forEach
                 }
                 val item = job.item
@@ -1166,7 +1197,7 @@ class MainActivity : Activity() {
                 if (sourceUrl == null || targetFile == null) return@forEach
                 mainHandler.post {
                     downloadCurrent = item.path
-                    job.status = "downloading"
+                    updateDownloadJob(job, "downloading")
                     downloadStatusText = "Downloading videos"
                     refreshDownloadStatusIfOpen()
                 }
@@ -1176,12 +1207,12 @@ class MainActivity : Activity() {
                         mainHandler.post {
                             job.bytesRead = loaded
                             job.totalBytes = total
+                            job.updatedAt = System.currentTimeMillis()
                             refreshDownloadStatusIfOpenThrottled()
                         }
                     }
                     mainHandler.post {
-                        job.status = "finished"
-                        job.error = ""
+                        updateDownloadJob(job, "finished", "")
                         downloadDone++
                         refreshDownloadStatusIfOpen()
                     }
@@ -1189,11 +1220,9 @@ class MainActivity : Activity() {
                     targetFile.delete()
                     mainHandler.post {
                         if (downloadCancelRequested) {
-                            job.status = "canceled"
-                            job.error = ""
+                            updateDownloadJob(job, "canceled", "")
                         } else {
-                            job.status = "failed"
-                            job.error = error.message ?: "Download failed"
+                            updateDownloadJob(job, "failed", error.message ?: "Download failed")
                             failedDownloadIds.add(item.id)
                             downloadFailed++
                         }
@@ -1367,7 +1396,9 @@ class MainActivity : Activity() {
         var status: String,
         var bytesRead: Long = 0,
         var totalBytes: Long = 0,
-        var error: String = ""
+        var error: String = "",
+        var order: Int = 0,
+        var updatedAt: Long = System.currentTimeMillis()
     ) {
         fun percent(): Int {
             if (totalBytes <= 0L) return if (status == "finished") 100 else 0
