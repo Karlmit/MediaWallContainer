@@ -92,6 +92,7 @@ class MainActivity : Activity() {
     private var downloadFailed = 0
     private var downloadCurrent = ""
     private var downloadLastUiRefresh = 0L
+    private var downloadCancelRequested = false
     private val downloadJobs = mutableListOf<DownloadJob>()
     private val failedDownloadIds = mutableSetOf<String>()
     private val randomSwapRunnable = object : Runnable {
@@ -371,11 +372,6 @@ class MainActivity : Activity() {
             }
         })
         panel.addView(button("Local downloads") { showDownloadStatusScreen() })
-        val cacheToggle = CheckBox(this).apply {
-            text = "Download optimized videos into private app storage"
-            setTextColor(Color.WHITE)
-            isChecked = localOptimizedCache
-        }
         val pinToggle = CheckBox(this).apply {
             text = "Lock app behind PIN"
             setTextColor(Color.WHITE)
@@ -384,15 +380,12 @@ class MainActivity : Activity() {
         val pinInput = numericPinInput("PIN").apply {
             setText(pinCode)
         }
-        panel.addView(cacheToggle)
         panel.addView(pinToggle)
         panel.addView(pinInput)
         panel.addView(button("Save settings") {
-            localOptimizedCache = cacheToggle.isChecked
             pinEnabled = pinToggle.isChecked
             pinCode = pinInput.text.toString()
             prefs.edit()
-                .putBoolean("localOptimizedCache", localOptimizedCache)
                 .putBoolean("pinEnabled", pinEnabled)
                 .putString("pinCode", pinCode)
                 .apply()
@@ -460,28 +453,30 @@ class MainActivity : Activity() {
             val stats = cacheStats()
             addView(TextView(context).apply {
                 text = buildString {
-                    append("Optimized videos saved here can play without network access.\n\n")
+                    append("Videos saved here can play without network access. MediaWall saves the optimized version when the server has one.\n\n")
                     append("Status: $downloadStatusText\n")
                     if (downloadCurrent.isNotBlank()) append("Current: $downloadCurrent\n")
                     if (downloadTotal > 0) append("Progress: $downloadDone / $downloadTotal, failed $downloadFailed\n")
                     append("\n")
-                    append("${stats.cachedVideos} / ${stats.knownVideos} optimized videos cached\n")
+                    append("${stats.cachedVideos} / ${stats.knownVideos} videos saved locally\n")
                     append("${formatBytes(stats.bytes)} stored in app-private storage\n")
-                    append("${downloadTargets(false).size} visible filtered videos can be downloaded\n")
-                    append("${downloadTargets(true).size} total videos can be downloaded\n\n")
-                    append("Downloads run one at a time to keep the phone responsive. Only /optimized videos are downloaded. Originals and fallback streams are not saved locally.")
+                    append("${downloadTargets().size} videos still need local copies\n\n")
+                    append("Downloads run one at a time to keep the phone responsive. The wall uses the same local files as this page, so watching a video also saves it if it is missing.")
                 }
                 setTextColor(Color.WHITE)
                 textSize = 15f
                 setPadding(0, 0, 0, 16)
             })
-            addView(button("Download visible filtered videos") {
-                downloadOptimizedVideos(downloadTargets(false))
+            addView(button("Download all missing videos") {
+                downloadVideos(downloadTargets())
                 showDownloadStatusScreen()
             })
-            addView(button("Download all optimized videos") {
-                downloadOptimizedVideos(downloadTargets(true))
+            addView(button("Stop downloads") {
+                downloadCancelRequested = true
+                downloadStatusText = "Stopping downloads"
                 showDownloadStatusScreen()
+            }.apply {
+                isEnabled = downloadAllInProgress
             })
             addView(button("Retry failed downloads") {
                 retryFailedDownloads()
@@ -496,6 +491,7 @@ class MainActivity : Activity() {
                 downloadTotal = 0
                 downloadDone = 0
                 downloadFailed = 0
+                downloadCancelRequested = false
                 downloadJobs.clear()
                 failedDownloadIds.clear()
                 toast("Private cache cleared")
@@ -666,6 +662,7 @@ class MainActivity : Activity() {
             try {
                 loginIfNeeded()
                 val loaded = fetchMediaResult()
+                cleanupLocalDownloads(loaded.media)
                 mainHandler.post {
                     offlineMode = false
                     allMedia = loaded.media
@@ -1039,10 +1036,8 @@ class MainActivity : Activity() {
         executor.execute {
             val playbackUrl = if (offlineMode) {
                 localOptimizedFile(item)?.toURI()?.toString() ?: item.bestRemoteVideoUrl()
-            } else if (localOptimizedCache) {
-                cachedVideoUrl(item)
             } else {
-                item.bestRemoteVideoUrl()
+                cachedVideoUrl(item)
             }
             mainHandler.post {
                 tile.removeView(progress)
@@ -1065,7 +1060,7 @@ class MainActivity : Activity() {
     }
 
     private fun cachedVideoUrl(item: MediaItem): String {
-        val sourceUrl = item.optimizedUrl ?: return item.bestRemoteVideoUrl()
+        val sourceUrl = item.localDownloadSourceUrl() ?: return item.bestRemoteVideoUrl()
         val cacheFile = localOptimizedFile(item) ?: return item.bestRemoteVideoUrl()
         if (cacheFile.exists() && cacheFile.length() > 0) return cacheFile.toURI().toString()
         downloadOptimizedVideo(item, sourceUrl, cacheFile)
@@ -1073,9 +1068,14 @@ class MainActivity : Activity() {
     }
 
     private fun localOptimizedFile(item: MediaItem): File? {
-        val sourceUrl = item.optimizedUrl ?: return null
+        val sourceUrl = item.localDownloadSourceUrl() ?: return null
         val cacheDir = File(filesDir, "optimized").apply { mkdirs() }
         return File(cacheDir, "${sha256(sourceUrl)}.mp4")
+    }
+
+    private fun MediaItem.localDownloadSourceUrl(): String? {
+        if (type != "video") return null
+        return optimizedUrl ?: fallbackUrl ?: url
     }
 
     private fun MediaItem.bestRemoteVideoUrl(): String {
@@ -1116,11 +1116,9 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun downloadTargets(includeAll: Boolean): List<MediaItem> {
-        val media = if (includeAll) mediaForStats() else filteredMedia()
-        return media.filter { item ->
-            item.type == "video" &&
-                item.optimizedUrl != null &&
+    private fun downloadTargets(): List<MediaItem> {
+        return mediaForStats().filter { item ->
+            item.localDownloadSourceUrl() != null &&
                 localOptimizedFile(item)?.let { !it.exists() || it.length() <= 0 } == true
         }
     }
@@ -1133,14 +1131,15 @@ class MainActivity : Activity() {
         }
         val targets = mediaForStats().filter { it.id in ids }
         failedDownloadIds.removeAll(ids)
-        downloadOptimizedVideos(targets)
+        downloadVideos(targets)
     }
 
-    private fun downloadOptimizedVideos(targets: List<MediaItem>) {
+    private fun downloadVideos(targets: List<MediaItem>) {
         if (downloadAllInProgress) {
-            toast("Optimized download already running")
+            toast("Download already running")
             return
         }
+        downloadCancelRequested = false
         downloadTotal = targets.size
         downloadDone = 0
         downloadFailed = 0
@@ -1153,22 +1152,27 @@ class MainActivity : Activity() {
             return
         }
         downloadAllInProgress = true
-        downloadStatusText = "Downloading optimized videos"
-        showCenter("Downloading $downloadTotal optimized videos", 1400)
+        downloadStatusText = "Downloading videos"
+        showCenter("Downloading $downloadTotal videos", 1400)
         executor.execute {
             downloadJobs.forEach { job ->
+                if (downloadCancelRequested) {
+                    mainHandler.post { job.status = "canceled" }
+                    return@forEach
+                }
                 val item = job.item
-                val sourceUrl = item.optimizedUrl
+                val sourceUrl = item.localDownloadSourceUrl()
                 val targetFile = localOptimizedFile(item)
                 if (sourceUrl == null || targetFile == null) return@forEach
                 mainHandler.post {
                     downloadCurrent = item.path
                     job.status = "downloading"
-                    downloadStatusText = "Downloading optimized videos"
+                    downloadStatusText = "Downloading videos"
                     refreshDownloadStatusIfOpen()
                 }
                 try {
                     downloadOptimizedVideo(item, sourceUrl, targetFile) { loaded, total ->
+                        if (downloadCancelRequested) throw InterruptedException("Download stopped")
                         mainHandler.post {
                             job.bytesRead = loaded
                             job.totalBytes = total
@@ -1184,10 +1188,15 @@ class MainActivity : Activity() {
                 } catch (error: Exception) {
                     targetFile.delete()
                     mainHandler.post {
-                        job.status = "failed"
-                        job.error = error.message ?: "Download failed"
-                        failedDownloadIds.add(item.id)
-                        downloadFailed++
+                        if (downloadCancelRequested) {
+                            job.status = "canceled"
+                            job.error = ""
+                        } else {
+                            job.status = "failed"
+                            job.error = error.message ?: "Download failed"
+                            failedDownloadIds.add(item.id)
+                            downloadFailed++
+                        }
                         refreshDownloadStatusIfOpen()
                     }
                 }
@@ -1195,11 +1204,14 @@ class MainActivity : Activity() {
             mainHandler.post {
                 downloadAllInProgress = false
                 downloadCurrent = ""
-                downloadStatusText = if (downloadFailed == 0) {
+                downloadStatusText = if (downloadCancelRequested) {
+                    "Download stopped"
+                } else if (downloadFailed == 0) {
                     "Finished downloading optimized videos"
                 } else {
                     "Finished with $downloadFailed failed downloads"
                 }
+                downloadCancelRequested = false
                 showCenter(downloadStatusText, 1800)
                 refreshDownloadStatusIfOpen()
             }
@@ -1227,25 +1239,30 @@ class MainActivity : Activity() {
         cacheFile.parentFile?.mkdirs()
         val tempFile = File(cacheFile.parentFile, "${cacheFile.name}.part")
         tempFile.delete()
-        val connection = open(sourceUrl)
-        val totalBytes = connection.contentLengthLong.takeIf { it > 0 } ?: 0L
-        var loadedBytes = 0L
-        connection.inputStream.use { input ->
-            FileOutputStream(tempFile).use { output ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read < 0) break
-                    output.write(buffer, 0, read)
-                    loadedBytes += read
-                    progress?.invoke(loadedBytes, totalBytes)
+        try {
+            val connection = open(sourceUrl)
+            val totalBytes = connection.contentLengthLong.takeIf { it > 0 } ?: 0L
+            var loadedBytes = 0L
+            connection.inputStream.use { input ->
+                FileOutputStream(tempFile).use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                        loadedBytes += read
+                        progress?.invoke(loadedBytes, totalBytes)
+                    }
                 }
             }
-        }
-        if (cacheFile.exists()) cacheFile.delete()
-        if (!tempFile.renameTo(cacheFile)) {
-            tempFile.copyTo(cacheFile, overwrite = true)
+            if (cacheFile.exists()) cacheFile.delete()
+            if (!tempFile.renameTo(cacheFile)) {
+                tempFile.copyTo(cacheFile, overwrite = true)
+                tempFile.delete()
+            }
+        } catch (error: Exception) {
             tempFile.delete()
+            throw error
         }
     }
 
@@ -1294,11 +1311,26 @@ class MainActivity : Activity() {
 
     private fun cacheStats(): CacheStats {
         val mediaForStats = mediaForStats()
-        val knownVideos = mediaForStats.count { it.type == "video" && it.optimizedUrl != null }
+        val knownVideos = mediaForStats.count { it.localDownloadSourceUrl() != null }
         val cachedVideos = mediaForStats.count { it.type == "video" && localOptimizedFile(it)?.exists() == true }
         val cacheDir = File(filesDir, "optimized")
         val bytes = cacheDir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
         return CacheStats(knownVideos, cachedVideos, bytes)
+    }
+
+    private fun cleanupLocalDownloads(media: List<MediaItem>) {
+        val cacheDir = File(filesDir, "optimized")
+        if (!cacheDir.exists()) return
+        val validNames = media
+            .mapNotNull { it.localDownloadSourceUrl() }
+            .map { "${sha256(it)}.mp4" }
+            .toSet()
+        cacheDir.walkTopDown()
+            .filter { it.isFile && it.name !in validNames && !it.name.endsWith(".part") }
+            .forEach { it.delete() }
+        cacheDir.walkTopDown()
+            .filter { it.isFile && it.name.endsWith(".part") }
+            .forEach { it.delete() }
     }
 
     private fun mediaForStats(): List<MediaItem> {
