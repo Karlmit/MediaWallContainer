@@ -12,6 +12,7 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -324,9 +325,7 @@ class MainActivity : Activity() {
             }
             addView(verticalToggle)
             addView(horizontalToggle)
-            addView(button("Settings") { showSettingsScreen() })
             addView(button("Subfolders") { showSubfolderScreen() })
-            addView(button("Local downloads") { showDownloadStatusScreen() })
             addView(button("Close menu") {
                 clearOverlay()
                 menuVisible = false
@@ -336,6 +335,7 @@ class MainActivity : Activity() {
                 }
                 scheduleRandomSwap()
             })
+            addView(button("Settings") { showSettingsScreen() })
         })
     }
 
@@ -370,6 +370,7 @@ class MainActivity : Activity() {
                 showSettingsScreen()
             }
         })
+        panel.addView(button("Local downloads") { showDownloadStatusScreen() })
         val cacheToggle = CheckBox(this).apply {
             text = "Download optimized videos into private app storage"
             setTextColor(Color.WHITE)
@@ -455,7 +456,7 @@ class MainActivity : Activity() {
     private fun showDownloadStatusScreen() {
         menuVisible = true
         overlayScreen = "downloads"
-        showOverlay(panel("Local downloads").apply {
+        showFullScreenOverlay(panel("Local downloads").apply {
             val stats = cacheStats()
             addView(TextView(context).apply {
                 text = buildString {
@@ -468,7 +469,7 @@ class MainActivity : Activity() {
                     append("${formatBytes(stats.bytes)} stored in app-private storage\n")
                     append("${downloadTargets(false).size} visible filtered videos can be downloaded\n")
                     append("${downloadTargets(true).size} total videos can be downloaded\n\n")
-                    append("Only /optimized videos are downloaded. Originals and fallback streams are not saved locally.")
+                    append("Downloads run one at a time to keep the phone responsive. Only /optimized videos are downloaded. Originals and fallback streams are not saved locally.")
                 }
                 setTextColor(Color.WHITE)
                 textSize = 15f
@@ -502,22 +503,34 @@ class MainActivity : Activity() {
             })
             if (downloadJobs.isNotEmpty()) {
                 addView(TextView(context).apply {
-                    text = "Download queue"
+                    text = "Active download queue"
                     setTextColor(Color.WHITE)
                     textSize = 18f
                     setPadding(0, 14, 0, 8)
                 })
                 downloadJobs.forEach { job -> addView(downloadJobRow(job)) }
+            } else {
+                addView(TextView(context).apply {
+                    text = "No active downloads. Start a download above, or retry failed downloads after a failed run."
+                    setTextColor(Color.rgb(166, 167, 173))
+                    textSize = 14f
+                    setPadding(0, 14, 0, 14)
+                })
             }
             addView(button("Open offline") {
                 clearOverlay()
+                restoreWallSurface()
                 menuVisible = false
                 if (!openOfflineMode()) {
                     toast("No cached offline videos yet")
                     showDownloadStatusScreen()
                 }
             })
-            addView(button("Back to menu") { showMainMenu() })
+            addView(button("Back to settings") {
+                clearOverlay()
+                restoreWallSurface()
+                showSettingsScreen()
+            })
         })
     }
 
@@ -567,6 +580,7 @@ class MainActivity : Activity() {
     }
 
     private fun showOverlay(content: View) {
+        restoreWallSurface()
         clearOverlay()
         val scroll = ScrollView(this).apply {
             setPadding(0, 20, 0, 20)
@@ -574,6 +588,44 @@ class MainActivity : Activity() {
         }
         overlayView = scroll
         root.addView(scroll, centeredPanelParams())
+    }
+
+    private fun showFullScreenOverlay(content: View) {
+        clearOverlay()
+        mainHandler.removeCallbacks(randomSwapRunnable)
+        pauseWallVideos()
+        wall.visibility = View.GONE
+        menuButton.visibility = View.GONE
+        selectedOnlyButton.visibility = View.GONE
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(Color.rgb(5, 5, 7))
+            setPadding(18, 18, 18, 18)
+            addView(content, ViewGroup.LayoutParams(-1, -2))
+        }
+        overlayView = scroll
+        root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+    }
+
+    private fun pauseWallVideos() {
+        tileViews.values.forEach { tile ->
+            findVideoViews(tile).forEach { it.pause() }
+        }
+    }
+
+    private fun findVideoViews(view: View): List<VideoView> {
+        if (view is VideoView) return listOf(view)
+        if (view !is FrameLayout) return emptyList()
+        val videos = mutableListOf<VideoView>()
+        for (index in 0 until view.childCount) {
+            videos.addAll(findVideoViews(view.getChildAt(index)))
+        }
+        return videos
+    }
+
+    private fun restoreWallSurface() {
+        wall.visibility = View.VISIBLE
+        menuButton.visibility = View.VISIBLE
+        selectedOnlyButton.visibility = if (selectedItemIds.isEmpty()) View.GONE else View.VISIBLE
     }
 
     private fun clearOverlay() {
