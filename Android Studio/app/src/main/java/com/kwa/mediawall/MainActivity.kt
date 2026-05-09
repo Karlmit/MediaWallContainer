@@ -90,6 +90,9 @@ class MainActivity : Activity() {
     private var downloadDone = 0
     private var downloadFailed = 0
     private var downloadCurrent = ""
+    private var downloadLastUiRefresh = 0L
+    private val downloadJobs = mutableListOf<DownloadJob>()
+    private val failedDownloadIds = mutableSetOf<String>()
     private val randomSwapRunnable = object : Runnable {
         override fun run() {
             if (!randomPaused && !menuVisible) replaceRandomItem()
@@ -295,9 +298,35 @@ class MainActivity : Activity() {
                 menuVisible = false
                 connectAndLoad()
             })
-            addView(button("Connection settings") { showConnectionSettingsScreen() })
+            val verticalToggle = CheckBox(context).apply {
+                text = "Allow vertical"
+                setTextColor(Color.WHITE)
+                isChecked = allowVertical
+                textSize = 18f
+                setPadding(0, 6, 0, 6)
+                setOnCheckedChangeListener { _, checked ->
+                    allowVertical = checked
+                    saveDisplaySettings()
+                    applySubfolderFilters()
+                }
+            }
+            val horizontalToggle = CheckBox(context).apply {
+                text = "Allow horizontal"
+                setTextColor(Color.WHITE)
+                isChecked = allowHorizontal
+                textSize = 18f
+                setPadding(0, 6, 0, 6)
+                setOnCheckedChangeListener { _, checked ->
+                    allowHorizontal = checked
+                    saveDisplaySettings()
+                    applySubfolderFilters()
+                }
+            }
+            addView(verticalToggle)
+            addView(horizontalToggle)
+            addView(button("Settings") { showSettingsScreen() })
             addView(button("Subfolders") { showSubfolderScreen() })
-            addView(button("Android settings") { showAndroidSettingsScreen() })
+            addView(button("Local downloads") { showDownloadStatusScreen() })
             addView(button("Close menu") {
                 clearOverlay()
                 menuVisible = false
@@ -310,10 +339,10 @@ class MainActivity : Activity() {
         })
     }
 
-    private fun showConnectionSettingsScreen() {
+    private fun showSettingsScreen() {
         menuVisible = true
-        overlayScreen = "connection"
-        val panel = panel("Connection settings")
+        overlayScreen = "settings"
+        val panel = panel("Settings")
         val urlInput = input("Docker URL, for example http://192.168.1.10:3060", false).apply {
             setText(serverUrl)
         }
@@ -333,23 +362,14 @@ class MainActivity : Activity() {
             menuVisible = false
             connectAndLoad()
         })
-        panel.addView(button("Download status") { showDownloadStatusScreen() })
         panel.addView(button("Open offline") {
             clearOverlay()
             menuVisible = false
             if (!openOfflineMode()) {
                 toast("No cached offline videos yet")
-                showConnectionSettingsScreen()
+                showSettingsScreen()
             }
         })
-        panel.addView(button("Back to menu") { showMainMenu() })
-        showOverlay(panel)
-    }
-
-    private fun showAndroidSettingsScreen() {
-        menuVisible = true
-        overlayScreen = "settings"
-        val panel = panel("Android settings")
         val cacheToggle = CheckBox(this).apply {
             text = "Download optimized videos into private app storage"
             setTextColor(Color.WHITE)
@@ -363,35 +383,18 @@ class MainActivity : Activity() {
         val pinInput = numericPinInput("PIN").apply {
             setText(pinCode)
         }
-        val verticalToggle = CheckBox(this).apply {
-            text = "Allow vertical"
-            setTextColor(Color.WHITE)
-            isChecked = allowVertical
-        }
-        val horizontalToggle = CheckBox(this).apply {
-            text = "Allow horizontal"
-            setTextColor(Color.WHITE)
-            isChecked = allowHorizontal
-        }
         panel.addView(cacheToggle)
-        panel.addView(verticalToggle)
-        panel.addView(horizontalToggle)
         panel.addView(pinToggle)
         panel.addView(pinInput)
         panel.addView(button("Save settings") {
             localOptimizedCache = cacheToggle.isChecked
-            allowVertical = verticalToggle.isChecked
-            allowHorizontal = horizontalToggle.isChecked
             pinEnabled = pinToggle.isChecked
             pinCode = pinInput.text.toString()
             prefs.edit()
                 .putBoolean("localOptimizedCache", localOptimizedCache)
-                .putBoolean("allowVertical", allowVertical)
-                .putBoolean("allowHorizontal", allowHorizontal)
                 .putBoolean("pinEnabled", pinEnabled)
                 .putString("pinCode", pinCode)
                 .apply()
-            applySubfolderFilters()
             toast("Settings saved")
             showMainMenu()
         })
@@ -452,28 +455,38 @@ class MainActivity : Activity() {
     private fun showDownloadStatusScreen() {
         menuVisible = true
         overlayScreen = "downloads"
-        showOverlay(panel("Download status").apply {
+        showOverlay(panel("Local downloads").apply {
             val stats = cacheStats()
             addView(TextView(context).apply {
                 text = buildString {
+                    append("Optimized videos saved here can play without network access.\n\n")
                     append("Status: $downloadStatusText\n")
                     if (downloadCurrent.isNotBlank()) append("Current: $downloadCurrent\n")
                     if (downloadTotal > 0) append("Progress: $downloadDone / $downloadTotal, failed $downloadFailed\n")
                     append("\n")
-                    append("Optimized video cache\n")
                     append("${stats.cachedVideos} / ${stats.knownVideos} optimized videos cached\n")
                     append("${formatBytes(stats.bytes)} stored in app-private storage\n")
-                    append("\n")
-                    append("Only /optimized videos are downloaded. Originals and fallback streams are not saved locally.\n")
-                    append("Cached files are inside Android app storage and should not appear in the normal device file browser.")
+                    append("${downloadTargets(false).size} visible filtered videos can be downloaded\n")
+                    append("${downloadTargets(true).size} total videos can be downloaded\n\n")
+                    append("Only /optimized videos are downloaded. Originals and fallback streams are not saved locally.")
                 }
                 setTextColor(Color.WHITE)
                 textSize = 15f
                 setPadding(0, 0, 0, 16)
             })
-            addView(button("Download all optimized videos") {
-                downloadAllOptimizedVideos()
+            addView(button("Download visible filtered videos") {
+                downloadOptimizedVideos(downloadTargets(false))
                 showDownloadStatusScreen()
+            })
+            addView(button("Download all optimized videos") {
+                downloadOptimizedVideos(downloadTargets(true))
+                showDownloadStatusScreen()
+            })
+            addView(button("Retry failed downloads") {
+                retryFailedDownloads()
+                showDownloadStatusScreen()
+            }.apply {
+                isEnabled = failedDownloadIds.isNotEmpty()
             })
             addView(button("Clear private video cache") {
                 File(filesDir, "optimized").deleteRecursively()
@@ -482,9 +495,20 @@ class MainActivity : Activity() {
                 downloadTotal = 0
                 downloadDone = 0
                 downloadFailed = 0
+                downloadJobs.clear()
+                failedDownloadIds.clear()
                 toast("Private cache cleared")
                 showDownloadStatusScreen()
             })
+            if (downloadJobs.isNotEmpty()) {
+                addView(TextView(context).apply {
+                    text = "Download queue"
+                    setTextColor(Color.WHITE)
+                    textSize = 18f
+                    setPadding(0, 14, 0, 8)
+                })
+                downloadJobs.forEach { job -> addView(downloadJobRow(job)) }
+            }
             addView(button("Open offline") {
                 clearOverlay()
                 menuVisible = false
@@ -493,8 +517,31 @@ class MainActivity : Activity() {
                     showDownloadStatusScreen()
                 }
             })
-            addView(button("Back to connection settings") { showConnectionSettingsScreen() })
+            addView(button("Back to menu") { showMainMenu() })
         })
+    }
+
+    private fun downloadJobRow(job: DownloadJob): LinearLayout {
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 8, 0, 10)
+            addView(TextView(context).apply {
+                text = buildString {
+                    append(job.item.path)
+                    append("\n")
+                    append(job.status.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.US) else it.toString() })
+                    if (job.totalBytes > 0) append(" ${job.percent()}%")
+                    if (job.error.isNotBlank()) append(" - ${job.error}")
+                }
+                setTextColor(if (job.status == "failed") Color.rgb(255, 149, 149) else Color.WHITE)
+                textSize = 13f
+            })
+            addView(ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
+                max = 100
+                progress = job.percent()
+                isIndeterminate = job.status == "downloading" && job.totalBytes <= 0
+            }, LinearLayout.LayoutParams(-1, 18))
+        }
     }
 
     private fun panel(title: String): LinearLayout {
@@ -754,6 +801,13 @@ class MainActivity : Activity() {
         prefs.edit().putStringSet("excludedSubfolders", excludedSubfolders).apply()
     }
 
+    private fun saveDisplaySettings() {
+        prefs.edit()
+            .putBoolean("allowVertical", allowVertical)
+            .putBoolean("allowHorizontal", allowHorizontal)
+            .apply()
+    }
+
     private fun applySubfolderFilters() {
         activeMedia = resizeActiveMedia(itemCount)
         renderWall()
@@ -1010,21 +1064,37 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun downloadAllOptimizedVideos() {
-        if (downloadAllInProgress) {
-            toast("Optimized download already running")
-            return
-        }
-        val media = mediaForStats()
-        val targets = media.filter { item ->
+    private fun downloadTargets(includeAll: Boolean): List<MediaItem> {
+        val media = if (includeAll) mediaForStats() else filteredMedia()
+        return media.filter { item ->
             item.type == "video" &&
                 item.optimizedUrl != null &&
                 localOptimizedFile(item)?.let { !it.exists() || it.length() <= 0 } == true
+        }
+    }
+
+    private fun retryFailedDownloads() {
+        val ids = failedDownloadIds.toSet()
+        if (ids.isEmpty()) {
+            toast("No failed downloads to retry")
+            return
+        }
+        val targets = mediaForStats().filter { it.id in ids }
+        failedDownloadIds.removeAll(ids)
+        downloadOptimizedVideos(targets)
+    }
+
+    private fun downloadOptimizedVideos(targets: List<MediaItem>) {
+        if (downloadAllInProgress) {
+            toast("Optimized download already running")
+            return
         }
         downloadTotal = targets.size
         downloadDone = 0
         downloadFailed = 0
         downloadCurrent = ""
+        downloadJobs.clear()
+        downloadJobs.addAll(targets.map { DownloadJob(it, "queued") })
         if (targets.isEmpty()) {
             downloadStatusText = "All optimized videos are already cached"
             toast(downloadStatusText)
@@ -1034,24 +1104,37 @@ class MainActivity : Activity() {
         downloadStatusText = "Downloading optimized videos"
         showCenter("Downloading $downloadTotal optimized videos", 1400)
         executor.execute {
-            targets.forEach { item ->
+            downloadJobs.forEach { job ->
+                val item = job.item
                 val sourceUrl = item.optimizedUrl
                 val targetFile = localOptimizedFile(item)
                 if (sourceUrl == null || targetFile == null) return@forEach
                 mainHandler.post {
                     downloadCurrent = item.path
+                    job.status = "downloading"
                     downloadStatusText = "Downloading optimized videos"
                     refreshDownloadStatusIfOpen()
                 }
                 try {
-                    downloadOptimizedVideo(item, sourceUrl, targetFile)
+                    downloadOptimizedVideo(item, sourceUrl, targetFile) { loaded, total ->
+                        mainHandler.post {
+                            job.bytesRead = loaded
+                            job.totalBytes = total
+                            refreshDownloadStatusIfOpenThrottled()
+                        }
+                    }
                     mainHandler.post {
+                        job.status = "finished"
+                        job.error = ""
                         downloadDone++
                         refreshDownloadStatusIfOpen()
                     }
-                } catch (_: Exception) {
+                } catch (error: Exception) {
                     targetFile.delete()
                     mainHandler.post {
+                        job.status = "failed"
+                        job.error = error.message ?: "Download failed"
+                        failedDownloadIds.add(item.id)
                         downloadFailed++
                         refreshDownloadStatusIfOpen()
                     }
@@ -1075,14 +1158,37 @@ class MainActivity : Activity() {
         if (overlayScreen == "downloads" && menuVisible) showDownloadStatusScreen()
     }
 
-    private fun downloadOptimizedVideo(item: MediaItem, sourceUrl: String, cacheFile: File) {
+    private fun refreshDownloadStatusIfOpenThrottled() {
+        val now = System.currentTimeMillis()
+        if (now - downloadLastUiRefresh < 350) return
+        downloadLastUiRefresh = now
+        refreshDownloadStatusIfOpen()
+    }
+
+    private fun downloadOptimizedVideo(
+        item: MediaItem,
+        sourceUrl: String,
+        cacheFile: File,
+        progress: ((Long, Long) -> Unit)? = null
+    ) {
         showCenter("Downloading ${item.name}", 900)
         cacheFile.parentFile?.mkdirs()
         val tempFile = File(cacheFile.parentFile, "${cacheFile.name}.part")
         tempFile.delete()
         val connection = open(sourceUrl)
+        val totalBytes = connection.contentLengthLong.takeIf { it > 0 } ?: 0L
+        var loadedBytes = 0L
         connection.inputStream.use { input ->
-            FileOutputStream(tempFile).use { output -> input.copyTo(output) }
+            FileOutputStream(tempFile).use { output ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    output.write(buffer, 0, read)
+                    loadedBytes += read
+                    progress?.invoke(loadedBytes, totalBytes)
+                }
+            }
         }
         if (cacheFile.exists()) cacheFile.delete()
         if (!tempFile.renameTo(cacheFile)) {
@@ -1172,6 +1278,18 @@ class MainActivity : Activity() {
     )
 
     data class SubfolderItem(val name: String, val path: String)
+    data class DownloadJob(
+        val item: MediaItem,
+        var status: String,
+        var bytesRead: Long = 0,
+        var totalBytes: Long = 0,
+        var error: String = ""
+    ) {
+        fun percent(): Int {
+            if (totalBytes <= 0L) return if (status == "finished") 100 else 0
+            return ((bytesRead * 100) / totalBytes).coerceIn(0, 100).toInt()
+        }
+    }
     data class TileRect(val x: Int, val y: Int, val width: Int, val height: Int)
     data class Box(val width: Double, val height: Double)
     data class MediaResult(val media: List<MediaItem>, val subfolders: List<SubfolderItem>, val rawJson: String)
